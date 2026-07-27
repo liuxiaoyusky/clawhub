@@ -6,6 +6,8 @@ Mode: `before-after`
 
 Viewport: `390 × 844` with `375 px` document client width
 
+Capture timing: each page was allowed to settle for 5 seconds after load, then the app section was aligned at `top: 20 px` and allowed to settle for another 5 seconds before capture.
+
 ## Result
 
 - Published `clawhub.ai`: the app-category strip is `449 px` wide and expands the document to `469 px`.
