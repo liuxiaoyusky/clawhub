@@ -1,6 +1,6 @@
 # CLAW-561 Bookmark UI proof
 
-- Candidate: `892e9bdefc`
+- Candidate: `3f5c796a45`
 - Local frontend: `http://127.0.0.1:3028/steipete/weather`
 - Backend: read-only public ClawHub queries
 - Desktop: Lucide `bookmark`, accessible name `Bookmark skill`
