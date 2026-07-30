@@ -1,4 +1,4 @@
-name: CLAW-603 Permanent Test Proof
+name: CLAW-603 Pinned Permanent Test Activation
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   permanent-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 45
     environment:
       name: Test
     env:
@@ -21,6 +21,9 @@ jobs:
       DEPLOY_SHA: 58b82dc6d2ad5ef573a12733e593caa0a5fda96f
       TEST_SITE_URL: ${{ vars.SITE_URL }}
       VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      LEADERBOARD_RUN_ID: hs7nw9pgdqvtm6cxf9y4xhqs6x8bgdv6
+      TRENDING_RUN_ID: hs7s8h07d3910rn8taxwn91y8x8bh617
+      ACCIDENTAL_RUN_ID: hs7skp9a8p46s83p3rm9vhw01h8bg1pe
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -28,17 +31,37 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
-      - name: Import, activate, and prove the full permanent-Test corpus
+      - name: Cancel only the accidental run and atomically activate preserved imports
         run: |
           set -euo pipefail
           mkdir -p proof/claw-603
           operator_token=""
+          activated=0
+          proof_complete=0
+
+          post_mirror() {
+            local body="$1"
+            local output="$2"
+            curl \
+              --fail-with-body --silent --show-error --request POST \
+              --header "Authorization: Bearer $operator_token" \
+              --header "Content-Type: application/json" \
+              --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+              --data "$body" \
+              "$TEST_SITE_URL/ops/skills-sh/mirror-test" > "$output"
+          }
+
           cleanup() {
             set +e
+            if [[ "$proof_complete" != "1" && "$activated" == "1" && -n "$operator_token" ]]; then
+              post_mirror \
+                '{"operation":"deactivate","reason":"CLAW-603 pinned activation failed closed"}' \
+                proof/claw-603/failure-deactivation.json
+            fi
             bunx convex run --no-push skillsShMirror:configureInternal \
               '{
-                "actor":"CLAW-603 permanent Test workflow",
-                "reason":"CLAW-603 proof cleanup",
+                "actor":"CLAW-603 pinned permanent Test activation",
+                "reason":"CLAW-603 pinned activation cleanup",
                 "confirm":"enable-skills-sh-mirror-test",
                 "enabled":false,
                 "maxRowsPerRun":50000,
@@ -73,6 +96,25 @@ jobs:
             > proof/claw-603/capabilities-before.json
           bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
             > proof/claw-603/isolation-before.json
+          bunx convex run --no-push --inline-query "
+            const run = await ctx.db.get('$ACCIDENTAL_RUN_ID');
+            return run ? {
+              runId: run._id,
+              status: run.status,
+              page: run.page,
+              offset: run.offset,
+              leaseOwner: run.batchLeaseToken ?? null,
+              leaseExpiresAt: run.batchLeaseExpiresAt ?? null,
+              updatedAt: run.updatedAt,
+            } : null;
+          " > proof/claw-603/accidental-run-lease-raw.json
+          jq --argjson readAt "$(date +%s000)" '
+            . + {
+              readAt: $readAt,
+              leaseExpiredAtRead: (.leaseExpiresAt == null or .leaseExpiresAt <= $readAt)
+            }
+          ' proof/claw-603/accidental-run-lease-raw.json > proof/claw-603/accidental-run-lease.json
+          rm proof/claw-603/accidental-run-lease-raw.json
 
           token_seed="$(bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}')"
           operator_token="$(jq -r '.admin.token // empty' <<<"$token_seed")"
@@ -80,112 +122,84 @@ jobs:
           [[ -n "$operator_token" ]]
           echo "::add-mask::$operator_token"
 
-          mirror_url="$TEST_SITE_URL/ops/skills-sh/mirror-test"
-          curl \
-            --fail-with-body --silent --show-error --request POST \
-            --header "Authorization: Bearer $operator_token" \
-            --header "Content-Type: application/json" \
-            --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-            --data '{"operation":"status"}' \
-            "$mirror_url" > proof/claw-603/mirror-status-before.json
+          post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-before.json
+          jq -e \
+            --arg leaderboard "$LEADERBOARD_RUN_ID" \
+            --arg trending "$TRENDING_RUN_ID" \
+            --arg accidental "$ACCIDENTAL_RUN_ID" '
+              .control.latestCompletedLeaderboardRunId == $leaderboard and
+              ([.runs[] | select(.runId == $leaderboard and .status == "completed" and .sourceView == "leaderboard" and .sourceTotal == 9578 and .counts.observed == 9578 and .counts.rejected == 525 and .counts.conflicts == 525 and .counts.quarantined == 525 and .counts.scansPlanned == 0 and .counts.scansAdmitted == 0)] | length == 1) and
+              ([.runs[] | select(.runId == $trending and .status == "completed" and .sourceView == "trending" and .sourceTotal == 9497 and .counts.observed == 9497 and .counts.trendingJoined == 5766 and .counts.trendingMissing == 3731 and .counts.trendingHydrated == 50 and .counts.scansPlanned == 0 and .counts.scansAdmitted == 0)] | length == 1) and
+              ([.runs[] | select(.runId == $accidental and (.status == "running" or .status == "paused" or .status == "reconciling" or .status == "canceled"))] | length == 1) and
+              ([.runs[] | select((.status == "running" or .status == "paused" or .status == "reconciling") and .runId != $accidental)] | length == 0)
+            ' proof/claw-603/mirror-status-before.json >/dev/null
 
-          export CLAWHUB_SKILLS_SH_SYNC_TOKEN="$operator_token"
-          export CLAWHUB_SKILLS_SH_SYNC_URL="$mirror_url?x-vercel-protection-bypass=$VERCEL_AUTOMATION_BYPASS_SECRET"
-          export CLAWHUB_SKILLS_SH_SYNC_REASON="CLAW-603 permanent Test full-corpus proof $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT"
-          export CLAWHUB_SKILLS_SH_SYNC_OUTPUT="proof/claw-603/skills-sh-sync-proof.json"
-          bun scripts/skills-sh-catalog/sync.ts > proof/claw-603/skills-sh-sync-stdout.json
+          accidental_status="$(jq -r --arg id "$ACCIDENTAL_RUN_ID" '.runs[] | select(.runId == $id) | .status' proof/claw-603/mirror-status-before.json)"
+          if [[ "$accidental_status" == "canceled" ]]; then
+            jq --arg id "$ACCIDENTAL_RUN_ID" '.runs[] | select(.runId == $id)' \
+              proof/claw-603/mirror-status-before.json > proof/claw-603/accidental-run-canceled.json
+          else
+            jq -e '.leaseExpiredAtRead == true' proof/claw-603/accidental-run-lease.json >/dev/null
+            post_mirror \
+              "$(jq -nc --arg id "$ACCIDENTAL_RUN_ID" '{operation:"discard",runId:$id,reason:"CLAW-603 cancel only accidental proof run after lease expiry"}')" \
+              proof/claw-603/accidental-run-canceled.json
+          fi
+          jq -e --arg id "$ACCIDENTAL_RUN_ID" '.runId == $id and .status == "canceled"' \
+            proof/claw-603/accidental-run-canceled.json >/dev/null
 
-          curl \
-            --fail-with-body --silent --show-error --request POST \
-            --header "Authorization: Bearer $operator_token" \
-            --header "Content-Type: application/json" \
-            --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-            --data '{"operation":"status"}' \
-            "$mirror_url" > proof/claw-603/mirror-status-after.json
-          curl \
-            --fail-with-body --silent --show-error --request POST \
-            --header "Authorization: Bearer $operator_token" \
-            --header "Content-Type: application/json" \
-            --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-            --data '{"operation":"isolation"}' \
-            "$mirror_url" > proof/claw-603/isolation-after-route.json
+          post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-after-cancel.json
+          jq -e \
+            --arg leaderboard "$LEADERBOARD_RUN_ID" \
+            --arg trending "$TRENDING_RUN_ID" \
+            --arg accidental "$ACCIDENTAL_RUN_ID" '
+              .control.latestCompletedLeaderboardRunId == $leaderboard and
+              ([.runs[] | select(.runId == $leaderboard and .status == "completed")] | length == 1) and
+              ([.runs[] | select(.runId == $trending and .status == "completed")] | length == 1) and
+              ([.runs[] | select(.runId == $accidental and .status == "canceled")] | length == 1) and
+              ([.runs[] | select(.status == "running" or .status == "paused" or .status == "reconciling")] | length == 0)
+            ' proof/claw-603/mirror-status-after-cancel.json >/dev/null
 
-          bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
-            > proof/claw-603/isolation-after.json
+          post_mirror \
+            '{"operation":"configure","enabled":true,"reason":"CLAW-603 pinned permanent Test activation"}' \
+            proof/claw-603/control-enabled.json
+          post_mirror \
+            '{"operation":"verify-activate","reason":"CLAW-603 pinned permanent Test activation"}' \
+            proof/claw-603/activation.json
+          activated=1
+          jq -e '
+            .ok == true and .activated == true and
+            .leaderboard.sourceTotal == 9578 and .leaderboard.accepted == 9053 and .leaderboard.rejected == 525 and
+            .trending.sourceTotal == 9497 and .trending.joined == 5766 and .trending.missing == 3731 and .trending.hydrated == 50 and
+            .corpus.eligible + .corpus.claimExcluded == 9103 and
+            .corpus.eligiblePublished == .corpus.eligible and
+            .corpus.hiddenEligible == 0 and .corpus.unsafePublished == 0 and
+            .trendingSnapshot.sourceCounts.skillsShTrending == 5766 and
+            .scansPlanned == 0 and .scansAdmitted == 0
+          ' proof/claw-603/activation.json >/dev/null
+
           bunx convex run --no-push skillsShMirrorVisibility:auditInternal '{}' \
             > proof/claw-603/visibility-audit.json
           bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
             > proof/claw-603/capabilities-after.json
-
-          public_site="https://academic-chihuahua-392.convex.site"
-          curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/search?q=skills-sh%3Apatrick-erichsen%2Fskills%2Fhtml&mode=exact&limit=10" \
-            > proof/claw-603/search-exact.json
-          curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html" \
-            > proof/claw-603/detail.json
-          curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html/install" \
-            > proof/claw-603/install.json
-          curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/trending?kind=skills&limit=100" \
-            > proof/claw-603/trending-page-1.json
-          next_cursor="$(jq -r '.nextCursor // empty' proof/claw-603/trending-page-1.json)"
-          if [[ -n "$next_cursor" ]]; then
-            encoded_cursor="$(jq -rn --arg value "$next_cursor" '$value|@uri')"
-            curl --fail-with-body --silent --show-error \
-              "$public_site/api/v1/trending?kind=skills&limit=100&cursor=$encoded_cursor" \
-              > proof/claw-603/trending-page-2.json
-          else
-            jq -n '{items:[],nextCursor:null}' > proof/claw-603/trending-page-2.json
-          fi
-
-          search_latency="$(curl --fail-with-body --silent --output /dev/null --write-out '%{time_total}' \
-            "$public_site/api/v1/search?q=skills-sh%3Apatrick-erichsen%2Fskills%2Fhtml&mode=exact&limit=10")"
-          detail_latency="$(curl --fail-with-body --silent --output /dev/null --write-out '%{time_total}' \
-            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html")"
-          trending_latency="$(curl --fail-with-body --silent --output /dev/null --write-out '%{time_total}' \
-            "$public_site/api/v1/trending?kind=skills&limit=100")"
-          jq -n \
-            --argjson searchSeconds "$search_latency" \
-            --argjson detailSeconds "$detail_latency" \
-            --argjson trendingSeconds "$trending_latency" \
-            '{searchSeconds:$searchSeconds,detailSeconds:$detailSeconds,trendingSeconds:$trendingSeconds}' \
-            > proof/claw-603/latency.json
-
-          jq -e '
-            .ok == true and
-            .leaderboard.status == "completed" and
-            .trending.status == "completed" and
-            .leaderboard.counts.observed == .leaderboard.sourceTotal and
-            .trending.counts.observed == .trending.sourceTotal and
-            .leaderboard.counts.scansPlanned == 0 and
-            .leaderboard.counts.scansAdmitted == 0 and
-            .trending.counts.scansPlanned == 0 and
-            .trending.counts.scansAdmitted == 0 and
-            .activation.activated == true and
-            .activation.corpus.hiddenEligible == 0 and
-            .activation.corpus.unsafePublished == 0 and
-            .scansPlanned == 0 and
-            .scansAdmitted == 0
-          ' proof/claw-603/skills-sh-sync-proof.json >/dev/null
+          bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
+            > proof/claw-603/isolation-after.json
           jq -e '.skillsSh.publicCatalogEnabled == true and .skillsSh.scanPlanningEnabled == false and .skillsSh.scanAdmissionEnabled == false' \
             proof/claw-603/capabilities-after.json >/dev/null
-          jq -e '.catalogScanAttempts.count == 9 and .nativeScanJobs.count == 16 and .nativeScanJobs.updatedAtSum == 28554932587800' \
+          jq -e '.counts.eligible + .counts.claimExcluded == 9103 and .counts.eligiblePublished == .counts.eligible and .counts.hiddenEligible == 0 and .counts.unsafePublished == 0 and .scansPlanned == 0 and .scansAdmitted == 0' \
+            proof/claw-603/visibility-audit.json >/dev/null
+          jq -e --slurpfile before proof/claw-603/isolation-before.json '. == $before[0]' \
             proof/claw-603/isolation-after.json >/dev/null
-          jq -e '.trust.clawhubScan == "unscanned" and .trust.label == "Not scanned by ClawHub"' \
-            proof/claw-603/install.json >/dev/null
-          jq -e '.items | length > 0' proof/claw-603/trending-page-1.json >/dev/null
 
+          proof_complete=1
           cleanup
           trap - EXIT
           jq -e '.disableExit == 0 and .tokenRotationExit == 0 and .revokedStatus == "401"' \
             proof/claw-603/cleanup.json >/dev/null
 
-      - name: Upload CLAW-603 permanent-Test proof
+      - name: Upload CLAW-603 pinned activation proof
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: claw-603-permanent-test-${{ github.run_id }}-${{ github.run_attempt }}
+          name: claw-603-pinned-activation-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: proof/claw-603/
