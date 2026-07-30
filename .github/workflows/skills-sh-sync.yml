@@ -1,4 +1,4 @@
-name: CLAW-603 Pinned Permanent Test Activation
+name: CLAW-603 Permanent Test Drift Audit
 
 on:
   workflow_dispatch:
@@ -13,14 +13,12 @@ permissions:
 jobs:
   permanent-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     environment:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
       DEPLOY_SHA: 58b82dc6d2ad5ef573a12733e593caa0a5fda96f
-      TEST_SITE_URL: ${{ vars.SITE_URL }}
-      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
       LEADERBOARD_RUN_ID: hs7nw9pgdqvtm6cxf9y4xhqs6x8bgdv6
       TRENDING_RUN_ID: hs7s8h07d3910rn8taxwn91y8x8bh617
       ACCIDENTAL_RUN_ID: hs7skp9a8p46s83p3rm9vhw01h8bg1pe
@@ -31,175 +29,99 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
-      - name: Cancel only the accidental run and atomically activate preserved imports
+      - name: Audit exact permanent-Test drift without mutation
         run: |
           set -euo pipefail
           mkdir -p proof/claw-603
-          operator_token=""
-          activated=0
-          proof_complete=0
-
-          post_mirror() {
-            local body="$1"
-            local output="$2"
-            curl \
-              --fail-with-body --silent --show-error --request POST \
-              --header "Authorization: Bearer $operator_token" \
-              --header "Content-Type: application/json" \
-              --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-              --data "$body" \
-              "$TEST_SITE_URL/ops/skills-sh/mirror-test" > "$output"
-          }
-
-          cleanup() {
-            set +e
-            if [[ "$proof_complete" != "1" && "$activated" == "1" && -n "$operator_token" ]]; then
-              post_mirror \
-                '{"operation":"deactivate","reason":"CLAW-603 pinned activation failed closed"}' \
-                proof/claw-603/failure-deactivation.json
-            fi
-            bunx convex run --no-push skillsShMirror:configureInternal \
-              '{
-                "actor":"CLAW-603 pinned permanent Test activation",
-                "reason":"CLAW-603 pinned activation cleanup",
-                "confirm":"enable-skills-sh-mirror-test",
-                "enabled":false,
-                "maxRowsPerRun":50000,
-                "maxRowsPerBatch":50,
-                "maxDetailBytes":65536
-              }' > proof/claw-603/control-disabled.json 2>&1
-            disable_exit=$?
-            bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}' >/dev/null
-            token_rotation_exit=$?
-            if [[ -n "$operator_token" ]]; then
-              revoked_status="$(
-                curl --silent --output /dev/null --write-out '%{http_code}' \
-                  --header "Authorization: Bearer $operator_token" \
-                  https://academic-chihuahua-392.convex.site/api/v1/operator/skills-sh/catalog-test
-              )"
-            else
-              revoked_status="not-created"
-            fi
-            jq -n \
-              --argjson disableExit "$disable_exit" \
-              --argjson tokenRotationExit "$token_rotation_exit" \
-              --arg revokedStatus "$revoked_status" \
-              '{disableExit:$disableExit,tokenRotationExit:$tokenRotationExit,revokedStatus:$revokedStatus}' \
-              > proof/claw-603/cleanup.json
-            set -e
-          }
-          trap cleanup EXIT
-
           bunx convex run --no-push appMeta:getDeploymentInfo '{}' > proof/claw-603/deployment.json
           jq -e --arg sha "$DEPLOY_SHA" '.appBuildSha == $sha' proof/claw-603/deployment.json >/dev/null
           bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
-            > proof/claw-603/capabilities-before.json
+            > proof/claw-603/capabilities.json
           bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
-            > proof/claw-603/isolation-before.json
-          bunx convex run --no-push --inline-query "
-            const run = await ctx.db.get('$ACCIDENTAL_RUN_ID');
-            return run ? {
-              runId: run._id,
-              status: run.status,
-              page: run.page,
-              offset: run.offset,
-              leaseOwner: run.batchLeaseToken ?? null,
-              leaseExpiresAt: run.batchLeaseExpiresAt ?? null,
-              updatedAt: run.updatedAt,
-            } : null;
-          " > proof/claw-603/accidental-run-lease-raw.json
-          jq --argjson readAt "$(date +%s000)" '
-            . + {
-              readAt: $readAt,
-              leaseExpiredAtRead: (.leaseExpiresAt == null or .leaseExpiresAt <= $readAt)
-            }
-          ' proof/claw-603/accidental-run-lease-raw.json > proof/claw-603/accidental-run-lease.json
-          rm proof/claw-603/accidental-run-lease-raw.json
-
-          token_seed="$(bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}')"
-          operator_token="$(jq -r '.admin.token // empty' <<<"$token_seed")"
-          token_seed=""
-          [[ -n "$operator_token" ]]
-          echo "::add-mask::$operator_token"
-
-          post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-before.json
-          jq -e \
-            --arg leaderboard "$LEADERBOARD_RUN_ID" \
-            --arg trending "$TRENDING_RUN_ID" \
-            --arg accidental "$ACCIDENTAL_RUN_ID" '
-              .control.latestCompletedLeaderboardRunId == $leaderboard and
-              ([.runs[] | select(.runId == $leaderboard and .status == "completed" and .sourceView == "leaderboard" and .sourceTotal == 9578 and .counts.observed == 9578 and .counts.rejected == 525 and .counts.conflicts == 525 and .counts.quarantined == 525 and .counts.scansPlanned == 0 and .counts.scansAdmitted == 0)] | length == 1) and
-              ([.runs[] | select(.runId == $trending and .status == "completed" and .sourceView == "trending" and .sourceTotal == 9497 and .counts.observed == 9497 and .counts.trendingJoined == 5766 and .counts.trendingMissing == 3731 and .counts.trendingHydrated == 50 and .counts.scansPlanned == 0 and .counts.scansAdmitted == 0)] | length == 1) and
-              ([.runs[] | select(.runId == $accidental and (.status == "running" or .status == "paused" or .status == "reconciling" or .status == "canceled"))] | length == 1) and
-              ([.runs[] | select((.status == "running" or .status == "paused" or .status == "reconciling") and .runId != $accidental)] | length == 0)
-            ' proof/claw-603/mirror-status-before.json >/dev/null
-
-          accidental_status="$(jq -r --arg id "$ACCIDENTAL_RUN_ID" '.runs[] | select(.runId == $id) | .status' proof/claw-603/mirror-status-before.json)"
-          if [[ "$accidental_status" == "canceled" ]]; then
-            jq --arg id "$ACCIDENTAL_RUN_ID" '.runs[] | select(.runId == $id)' \
-              proof/claw-603/mirror-status-before.json > proof/claw-603/accidental-run-canceled.json
-          else
-            jq -e '.leaseExpiredAtRead == true' proof/claw-603/accidental-run-lease.json >/dev/null
-            post_mirror \
-              "$(jq -nc --arg id "$ACCIDENTAL_RUN_ID" '{operation:"discard",runId:$id,reason:"CLAW-603 cancel only accidental proof run after lease expiry"}')" \
-              proof/claw-603/accidental-run-canceled.json
-          fi
-          jq -e --arg id "$ACCIDENTAL_RUN_ID" '.runId == $id and .status == "canceled"' \
-            proof/claw-603/accidental-run-canceled.json >/dev/null
-
-          post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-after-cancel.json
-          jq -e \
-            --arg leaderboard "$LEADERBOARD_RUN_ID" \
-            --arg trending "$TRENDING_RUN_ID" \
-            --arg accidental "$ACCIDENTAL_RUN_ID" '
-              .control.latestCompletedLeaderboardRunId == $leaderboard and
-              ([.runs[] | select(.runId == $leaderboard and .status == "completed")] | length == 1) and
-              ([.runs[] | select(.runId == $trending and .status == "completed")] | length == 1) and
-              ([.runs[] | select(.runId == $accidental and .status == "canceled")] | length == 1) and
-              ([.runs[] | select(.status == "running" or .status == "paused" or .status == "reconciling")] | length == 0)
-            ' proof/claw-603/mirror-status-after-cancel.json >/dev/null
-
-          post_mirror \
-            '{"operation":"configure","enabled":true,"reason":"CLAW-603 pinned permanent Test activation"}' \
-            proof/claw-603/control-enabled.json
-          post_mirror \
-            '{"operation":"verify-activate","reason":"CLAW-603 pinned permanent Test activation"}' \
-            proof/claw-603/activation.json
-          activated=1
-          jq -e '
-            .ok == true and .activated == true and
-            .leaderboard.sourceTotal == 9578 and .leaderboard.accepted == 9053 and .leaderboard.rejected == 525 and
-            .trending.sourceTotal == 9497 and .trending.joined == 5766 and .trending.missing == 3731 and .trending.hydrated == 50 and
-            .corpus.eligible + .corpus.claimExcluded == 9103 and
-            .corpus.eligiblePublished == .corpus.eligible and
-            .corpus.hiddenEligible == 0 and .corpus.unsafePublished == 0 and
-            .trendingSnapshot.sourceCounts.skillsShTrending == 5766 and
-            .scansPlanned == 0 and .scansAdmitted == 0
-          ' proof/claw-603/activation.json >/dev/null
-
+            > proof/claw-603/isolation.json
           bunx convex run --no-push skillsShMirrorVisibility:auditInternal '{}' \
             > proof/claw-603/visibility-audit.json
-          bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
-            > proof/claw-603/capabilities-after.json
-          bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
-            > proof/claw-603/isolation-after.json
-          jq -e '.skillsSh.publicCatalogEnabled == true and .skillsSh.scanPlanningEnabled == false and .skillsSh.scanAdmissionEnabled == false' \
-            proof/claw-603/capabilities-after.json >/dev/null
-          jq -e '.counts.eligible + .counts.claimExcluded == 9103 and .counts.eligiblePublished == .counts.eligible and .counts.hiddenEligible == 0 and .counts.unsafePublished == 0 and .scansPlanned == 0 and .scansAdmitted == 0' \
-            proof/claw-603/visibility-audit.json >/dev/null
-          jq -e --slurpfile before proof/claw-603/isolation-before.json '. == $before[0]' \
-            proof/claw-603/isolation-after.json >/dev/null
+          bunx convex run --no-push --inline-query "
+            const runs = await Promise.all([
+              ctx.db.get('$LEADERBOARD_RUN_ID'),
+              ctx.db.get('$TRENDING_RUN_ID'),
+              ctx.db.get('$ACCIDENTAL_RUN_ID'),
+            ]);
+            return runs.map((run) => run ? {
+              runId: run._id,
+              status: run.status,
+              sourceView: run.sourceView ?? 'leaderboard',
+              sourceTotal: run.sourceTotal,
+              counts: run.counts,
+              startedAt: run.startedAt,
+              completedAt: run.completedAt ?? null,
+            } : null);
+          " > proof/claw-603/runs.json
 
-          proof_complete=1
-          cleanup
-          trap - EXIT
-          jq -e '.disableExit == 0 and .tokenRotationExit == 0 and .revokedStatus == "401"' \
-            proof/claw-603/cleanup.json >/dev/null
+          : > proof/claw-603/provenance-pages.jsonl
+          cursor="null"
+          while true; do
+            page="$(bunx convex run --no-push --inline-query "
+              const result = await ctx.db.query('skillsShMirrorDigests').paginate({cursor:$cursor,numItems:500});
+              return {
+                isDone: result.isDone,
+                continueCursor: result.continueCursor,
+                page: result.page.map((row) => ({
+                  externalId: row.externalId,
+                  lastObservedRunId: row.lastObservedRunId,
+                  active: row.active,
+                  sourceFreshnessStatus: row.sourceFreshnessStatus,
+                  claimStatus: row.claimStatus ?? null,
+                  publicVisible: row.publicVisible,
+                  installable: row.installable,
+                  githubPath: row.githubPath ?? null,
+                  githubCommit: row.githubCommit ?? null,
+                  sourceContentHash: row.sourceContentHash ?? null,
+                  tombstoned: row.tombstonedAt !== undefined,
+                })),
+              };
+            ")"
+            jq -c . <<<"$page" >> proof/claw-603/provenance-pages.jsonl
+            if [[ "$(jq -r '.isDone' <<<"$page")" == "true" ]]; then
+              break
+            fi
+            cursor="$(jq -c '.continueCursor' <<<"$page")"
+          done
 
-      - name: Upload CLAW-603 pinned activation proof
+          jq -s \
+            --arg leaderboard "$LEADERBOARD_RUN_ID" \
+            --arg trending "$TRENDING_RUN_ID" \
+            --arg accidental "$ACCIDENTAL_RUN_ID" '
+              [.[].page[]] as $rows |
+              {
+                pages: length,
+                total: ($rows | length),
+                uniqueExternalIds: ($rows | map(.externalId) | unique | length),
+                provenance: {
+                  leaderboard: ($rows | map(select(.lastObservedRunId == $leaderboard)) | length),
+                  trending: ($rows | map(select(.lastObservedRunId == $trending)) | length),
+                  accidental: ($rows | map(select(.lastObservedRunId == $accidental)) | length),
+                  other: ($rows | map(select(.lastObservedRunId != $leaderboard and .lastObservedRunId != $trending and .lastObservedRunId != $accidental)) | length)
+                },
+                accidentalPartition: {
+                  total: ($rows | map(select(.lastObservedRunId == $accidental)) | length),
+                  active: ($rows | map(select(.lastObservedRunId == $accidental and .active == true)) | length),
+                  observedOnly: ($rows | map(select(.lastObservedRunId == $accidental and .sourceFreshnessStatus == "observed-only")) | length),
+                  stale: ($rows | map(select(.lastObservedRunId == $accidental and .sourceFreshnessStatus == "stale")) | length),
+                  claimed: ($rows | map(select(.lastObservedRunId == $accidental and .claimStatus != null)) | length),
+                  visibleInstallable: ($rows | map(select(.lastObservedRunId == $accidental and .publicVisible == true and .installable == true)) | length),
+                  immutableInstallable: ($rows | map(select(.lastObservedRunId == $accidental and .githubCommit != null and .sourceContentHash != null)) | length),
+                  tombstoned: ($rows | map(select(.lastObservedRunId == $accidental and .tombstoned == true)) | length)
+                }
+              }
+            ' proof/claw-603/provenance-pages.jsonl > proof/claw-603/provenance-summary.json
+          jq -e '.total == .uniqueExternalIds and .provenance.accidental == 2077' \
+            proof/claw-603/provenance-summary.json >/dev/null
+
+      - name: Upload CLAW-603 drift audit
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: claw-603-pinned-activation-${{ github.run_id }}-${{ github.run_attempt }}
+          name: claw-603-drift-audit-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: proof/claw-603/
