@@ -18,13 +18,13 @@ jobs:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: fa60971117216848c5a6481401943bfa74af3940
+      DEPLOY_SHA: 5a1d9c947228a3312f21c693902e5b0d5426d47e
       TEST_SITE_URL: ${{ vars.SITE_URL }}
       VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: fa60971117216848c5a6481401943bfa74af3940
+          ref: 5a1d9c947228a3312f21c693902e5b0d5426d47e
 
       - uses: ./.github/actions/setup-bun
 
