@@ -1,4 +1,4 @@
-name: CLAW-603 Permanent Test Proof
+name: CLAW-603 Permanent Test Claim Proof
 
 on:
   workflow_dispatch:
@@ -11,9 +11,9 @@ permissions:
   contents: read
 
 jobs:
-  permanent-test:
+  permanent-test-claim:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 45
     environment:
       name: Test
     env:
@@ -24,11 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 5a1d9c947228a3312f21c693902e5b0d5426d47e
+          ref: ${{ github.sha }}
 
       - uses: ./.github/actions/setup-bun
 
-      - name: Import, activate, and prove the full permanent-Test corpus
+      - name: Prove the deterministic claim lifecycle without paid scans
         run: |
           set -euo pipefail
           mkdir -p proof/claw-603
@@ -37,14 +37,14 @@ jobs:
             set +e
             bunx convex run --no-push skillsShMirror:configureInternal \
               '{
-                "actor":"CLAW-603 permanent Test workflow",
-                "reason":"CLAW-603 proof cleanup",
+                "actor":"CLAW-603 permanent Test claim workflow",
+                "reason":"CLAW-603 claim proof cleanup",
                 "confirm":"enable-skills-sh-mirror-test",
                 "enabled":false,
                 "maxRowsPerRun":50000,
                 "maxRowsPerBatch":50,
                 "maxDetailBytes":65536
-              }' > proof/claw-603/control-disabled.json 2>&1
+              }' > proof/claw-603/claim-control-disabled.json 2>&1
             disable_exit=$?
             bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}' >/dev/null
             token_rotation_exit=$?
@@ -62,17 +62,17 @@ jobs:
               --argjson tokenRotationExit "$token_rotation_exit" \
               --arg revokedStatus "$revoked_status" \
               '{disableExit:$disableExit,tokenRotationExit:$tokenRotationExit,revokedStatus:$revokedStatus}' \
-              > proof/claw-603/cleanup.json
+              > proof/claw-603/claim-cleanup.json
             set -e
           }
           trap cleanup EXIT
 
-          bunx convex run --no-push appMeta:getDeploymentInfo '{}' > proof/claw-603/deployment.json
-          jq -e --arg sha "$DEPLOY_SHA" '.appBuildSha == $sha' proof/claw-603/deployment.json >/dev/null
+          bunx convex run --no-push appMeta:getDeploymentInfo '{}' > proof/claw-603/claim-deployment.json
+          jq -e --arg sha "$DEPLOY_SHA" '.appBuildSha == $sha' proof/claw-603/claim-deployment.json >/dev/null
           bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
-            > proof/claw-603/capabilities-before.json
-          bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
-            > proof/claw-603/isolation-before.json
+            > proof/claw-603/claim-capabilities-before.json
+          jq -e '.skillsSh.publicCatalogEnabled == true and .skillsSh.scanPlanningEnabled == false and .skillsSh.scanAdmissionEnabled == false' \
+            proof/claw-603/claim-capabilities-before.json >/dev/null
 
           token_seed="$(bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}')"
           operator_token="$(jq -r '.admin.token // empty' <<<"$token_seed")"
@@ -80,112 +80,26 @@ jobs:
           [[ -n "$operator_token" ]]
           echo "::add-mask::$operator_token"
 
-          mirror_url="$TEST_SITE_URL/ops/skills-sh/mirror-test"
-          curl \
-            --fail-with-body --silent --show-error --request POST \
-            --header "Authorization: Bearer $operator_token" \
-            --header "Content-Type: application/json" \
-            --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-            --data '{"operation":"status"}' \
-            "$mirror_url" > proof/claw-603/mirror-status-before.json
+          export CLAWHUB_TEST_OPERATOR_TOKEN="$operator_token"
+          export CLAWHUB_TEST_MIRROR_GATE_URL="$TEST_SITE_URL/ops/skills-sh/mirror-test?x-vercel-protection-bypass=$VERCEL_AUTOMATION_BYPASS_SECRET"
+          export CLAWHUB_CLAIM_PROOF_OUTPUT="proof/claw-603/claim-lifecycle.json"
+          bun scripts/skills-sh-catalog/claw-603-claim-proof.ts \
+            > proof/claw-603/claim-lifecycle-stdout.json
 
-          export CLAWHUB_SKILLS_SH_SYNC_TOKEN="$operator_token"
-          export CLAWHUB_SKILLS_SH_SYNC_URL="$mirror_url?x-vercel-protection-bypass=$VERCEL_AUTOMATION_BYPASS_SECRET"
-          export CLAWHUB_SKILLS_SH_SYNC_REASON="CLAW-603 permanent Test full-corpus proof $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT"
-          export CLAWHUB_SKILLS_SH_SYNC_OUTPUT="proof/claw-603/skills-sh-sync-proof.json"
-          bun scripts/skills-sh-catalog/sync.ts > proof/claw-603/skills-sh-sync-stdout.json
-
-          curl \
-            --fail-with-body --silent --show-error --request POST \
-            --header "Authorization: Bearer $operator_token" \
-            --header "Content-Type: application/json" \
-            --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-            --data '{"operation":"status"}' \
-            "$mirror_url" > proof/claw-603/mirror-status-after.json
-          curl \
-            --fail-with-body --silent --show-error --request POST \
-            --header "Authorization: Bearer $operator_token" \
-            --header "Content-Type: application/json" \
-            --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-            --data '{"operation":"isolation"}' \
-            "$mirror_url" > proof/claw-603/isolation-after-route.json
-
-          bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
-            > proof/claw-603/isolation-after.json
-          bunx convex run --no-push skillsShMirrorVisibility:auditInternal '{}' \
-            > proof/claw-603/visibility-audit.json
           bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
-            > proof/claw-603/capabilities-after.json
-
-          public_site="https://academic-chihuahua-392.convex.site"
-          curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/search?q=skills-sh%3Apatrick-erichsen%2Fskills%2Fhtml&mode=exact&limit=10" \
-            > proof/claw-603/search-exact.json
-          curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html" \
-            > proof/claw-603/detail.json
-          curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html/install" \
-            > proof/claw-603/install.json
-          curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/trending?kind=skills&limit=100" \
-            > proof/claw-603/trending-page-1.json
-          next_cursor="$(jq -r '.nextCursor // empty' proof/claw-603/trending-page-1.json)"
-          if [[ -n "$next_cursor" ]]; then
-            encoded_cursor="$(jq -rn --arg value "$next_cursor" '$value|@uri')"
-            curl --fail-with-body --silent --show-error \
-              "$public_site/api/v1/trending?kind=skills&limit=100&cursor=$encoded_cursor" \
-              > proof/claw-603/trending-page-2.json
-          else
-            jq -n '{items:[],nextCursor:null}' > proof/claw-603/trending-page-2.json
-          fi
-
-          search_latency="$(curl --fail-with-body --silent --output /dev/null --write-out '%{time_total}' \
-            "$public_site/api/v1/search?q=skills-sh%3Apatrick-erichsen%2Fskills%2Fhtml&mode=exact&limit=10")"
-          detail_latency="$(curl --fail-with-body --silent --output /dev/null --write-out '%{time_total}' \
-            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html")"
-          trending_latency="$(curl --fail-with-body --silent --output /dev/null --write-out '%{time_total}' \
-            "$public_site/api/v1/trending?kind=skills&limit=100")"
-          jq -n \
-            --argjson searchSeconds "$search_latency" \
-            --argjson detailSeconds "$detail_latency" \
-            --argjson trendingSeconds "$trending_latency" \
-            '{searchSeconds:$searchSeconds,detailSeconds:$detailSeconds,trendingSeconds:$trendingSeconds}' \
-            > proof/claw-603/latency.json
-
-          jq -e '
-            .ok == true and
-            .leaderboard.status == "completed" and
-            .trending.status == "completed" and
-            .leaderboard.counts.observed == .leaderboard.sourceTotal and
-            .trending.counts.observed == .trending.sourceTotal and
-            .leaderboard.counts.scansPlanned == 0 and
-            .leaderboard.counts.scansAdmitted == 0 and
-            .trending.counts.scansPlanned == 0 and
-            .trending.counts.scansAdmitted == 0 and
-            .activation.activated == true and
-            .activation.corpus.hiddenEligible == 0 and
-            .activation.corpus.unsafePublished == 0 and
-            .scansPlanned == 0 and
-            .scansAdmitted == 0
-          ' proof/claw-603/skills-sh-sync-proof.json >/dev/null
-          jq -e '.skillsSh.publicCatalogEnabled == true and .skillsSh.scanPlanningEnabled == false and .skillsSh.scanAdmissionEnabled == false' \
-            proof/claw-603/capabilities-after.json >/dev/null
-          jq -e '.catalogScanAttempts.count == 9 and .nativeScanJobs.count == 16 and .nativeScanJobs.updatedAtSum == 28554932587800' \
-            proof/claw-603/isolation-after.json >/dev/null
-          jq -e '.trust.clawhubScan == "unscanned" and .trust.label == "Not scanned by ClawHub"' \
-            proof/claw-603/install.json >/dev/null
-          jq -e '.items | length > 0' proof/claw-603/trending-page-1.json >/dev/null
+            > proof/claw-603/claim-capabilities-after.json
+          jq -e '.ok == true and .target.productionWrites == 0 and .paidScans == 0 and .scansPlanned == 0 and .scansAdmitted == 0' \
+            proof/claw-603/claim-lifecycle.json >/dev/null
 
           cleanup
           trap - EXIT
           jq -e '.disableExit == 0 and .tokenRotationExit == 0 and .revokedStatus == "401"' \
-            proof/claw-603/cleanup.json >/dev/null
+            proof/claw-603/claim-cleanup.json >/dev/null
 
-      - name: Upload CLAW-603 permanent-Test proof
+      - name: Upload CLAW-603 claim proof
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: claw-603-permanent-test-${{ github.run_id }}-${{ github.run_attempt }}
+          name: claw-603-claim-proof-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: proof/claw-603/
