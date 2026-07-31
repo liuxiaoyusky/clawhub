@@ -23,14 +23,6 @@ jobs:
     environment:
       name: Production
     steps:
-      - name: Require main
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "::error::skills.sh production sync must run from refs/heads/main"
-            exit 1
-          fi
-
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.sha }}
