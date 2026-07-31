@@ -1,55 +1,277 @@
-name: skills.sh Production Sync
+name: CLAW-603 Permanent Test Claim and Native Proof
 
 on:
-  schedule:
-    - cron: "17 * * * *"
   workflow_dispatch:
 
 concurrency:
-  group: skills-sh-production-sync
+  group: claw-603-permanent-test-proof
   cancel-in-progress: false
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  sync:
+  permanent-test-claim:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    permissions:
-      contents: read
-      id-token: write
+    timeout-minutes: 60
     environment:
-      name: Production
+      name: Test
+    env:
+      CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+      DEPLOY_SHA: 41a75789909e4d4e71bb5496a9fbcc7c13fdb303
+      LEADERBOARD_RUN_ID: hs7qke4za0khb8n1dn3ptdj1w98bkzr5
+      TRENDING_RUN_ID: hs7ta346x92t82y7feq8smtej98bjakj
+      TEST_SITE_URL: ${{ vars.SITE_URL }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
     steps:
-      - name: Require main
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "::error::skills.sh production sync must run from refs/heads/main"
-            exit 1
-          fi
-
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.sha }}
 
       - uses: ./.github/actions/setup-bun
 
-      - name: Synchronize and automatically verify the production corpus
-        env:
-          CLAWHUB_SKILLS_SH_SYNC_OUTPUT: skills-sh-sync-proof.json
-          CLAWHUB_SKILLS_SH_SYNC_REASON: skills.sh production sync ${{ github.run_id }} attempt ${{ github.run_attempt }}
-          CLAWHUB_SKILLS_SH_SYNC_URL: https://clawhub.ai/ops/skills-sh/mirror
+      - name: Prove claim lifecycle and establish native-only Trending
         run: |
           set -euo pipefail
-          bun scripts/skills-sh-catalog/sync.ts
+          mkdir -p proof/claw-603
+          operator_token=""
+          proof_complete=0
 
-      - name: Upload skills.sh synchronization proof
+          direct_gate_close() {
+            bunx convex run --no-push skillsShMirrorVisibility:setPublicGateInternal \
+              '{
+                "enabled":false,
+                "actor":"CLAW-603 permanent Test claim workflow",
+                "reason":"CLAW-603 claim proof direct fail-closed fallback",
+                "confirm":"deactivate-skills-sh-public-test"
+              }' > proof/claw-603/direct-gate-close.json 2>&1
+          }
+
+          post_mirror() {
+            local body="$1"
+            local output="$2"
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Accept: application/json" \
+              --header "Authorization: Bearer $operator_token" \
+              --header "Content-Type: application/json" \
+              --data "$body" \
+              "$CLAWHUB_TEST_MIRROR_GATE_URL" > "$output"
+          }
+
+          cleanup() {
+            set +e
+            if [[ "$proof_complete" != "1" && -n "$operator_token" ]]; then
+              post_mirror \
+                '{"operation":"deactivate","reason":"CLAW-603 claim proof cleanup"}' \
+                proof/claw-603/cleanup-deactivation.json
+              deactivate_exit=$?
+            else
+              deactivate_exit=0
+            fi
+            if [[ "$proof_complete" != "1" && "$deactivate_exit" != "0" ]]; then
+              direct_gate_close
+              direct_gate_close_exit=$?
+            else
+              direct_gate_close_exit=0
+            fi
+            bunx convex run --no-push skillsShMirror:configureInternal \
+              '{
+                "actor":"CLAW-603 permanent Test claim workflow",
+                "reason":"CLAW-603 claim proof cleanup",
+                "confirm":"enable-skills-sh-mirror-test",
+                "enabled":false,
+                "maxRowsPerRun":50000,
+                "maxRowsPerBatch":50,
+                "maxDetailBytes":65536
+              }' > proof/claw-603/claim-control-disabled.json 2>&1
+            disable_exit=$?
+            bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}' >/dev/null
+            token_rotation_exit=$?
+            if [[ -n "$operator_token" ]]; then
+              revoked_status="$(
+                curl --silent --output /dev/null --write-out '%{http_code}' \
+                  --header "Authorization: Bearer $operator_token" \
+                  https://academic-chihuahua-392.convex.site/api/v1/operator/skills-sh/catalog-test
+              )"
+            else
+              revoked_status="not-created"
+            fi
+            if [[ "$proof_complete" != "1" && "$revoked_status" != "401" ]]; then
+              direct_gate_close
+              final_gate_close_exit=$?
+            else
+              final_gate_close_exit=0
+            fi
+            jq -n \
+              --argjson deactivateExit "$deactivate_exit" \
+              --argjson directGateCloseExit "$direct_gate_close_exit" \
+              --argjson disableExit "$disable_exit" \
+              --argjson tokenRotationExit "$token_rotation_exit" \
+              --arg revokedStatus "$revoked_status" \
+              --argjson finalGateCloseExit "$final_gate_close_exit" \
+              '{
+                deactivateExit:$deactivateExit,
+                directGateCloseExit:$directGateCloseExit,
+                disableExit:$disableExit,
+                tokenRotationExit:$tokenRotationExit,
+                revokedStatus:$revokedStatus,
+                finalGateCloseExit:$finalGateCloseExit
+              }' > proof/claw-603/claim-cleanup.json
+            set -e
+          }
+          trap cleanup EXIT
+
+          bunx convex run --no-push appMeta:getDeploymentInfo '{}' \
+            > proof/claw-603/claim-deployment.json
+          jq -e --arg sha "$DEPLOY_SHA" '.appBuildSha == $sha' \
+            proof/claw-603/claim-deployment.json >/dev/null
+          bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
+            > proof/claw-603/claim-capabilities-before.json
+          jq -e '
+            .skillsSh.publicCatalogEnabled == false and
+            .skillsSh.scanPlanningEnabled == false and
+            .skillsSh.scanAdmissionEnabled == false
+          ' proof/claw-603/claim-capabilities-before.json >/dev/null
+
+          token_seed="$(bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}')"
+          operator_token="$(jq -r '.admin.token // empty' <<<"$token_seed")"
+          token_seed=""
+          [[ -n "$operator_token" ]]
+          echo "::add-mask::$operator_token"
+
+          export CLAWHUB_TEST_OPERATOR_TOKEN="$operator_token"
+          export CLAWHUB_TEST_MIRROR_GATE_URL="$TEST_SITE_URL/ops/skills-sh/mirror-test?x-vercel-protection-bypass=$VERCEL_AUTOMATION_BYPASS_SECRET"
+          export CLAWHUB_CLAIM_PROOF_OUTPUT="proof/claw-603/claim-lifecycle.json"
+
+          post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-before.json
+          jq -e \
+            --arg leaderboardRunId "$LEADERBOARD_RUN_ID" \
+            --arg trendingRunId "$TRENDING_RUN_ID" '
+            ([.runs[] | select(.status == "running" or .status == "paused" or .status == "reconciling")] | length == 0) and
+            .invariants.publicVisible == false and
+            .invariants.scansPlanned == 0 and
+            .invariants.scansAdmitted == 0 and
+            .control.latestCompletedLeaderboardRunId == $leaderboardRunId and
+            .control.latestCompletedTrendingRunId == $trendingRunId
+          ' proof/claw-603/mirror-status-before.json >/dev/null
+
+          post_mirror \
+            '{"operation":"verify-activate","reason":"CLAW-603 permanent Test claim precondition"}' \
+            proof/claw-603/claim-activation.json
+          jq -e '
+            .activated == true and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0 and
+            .trendingSnapshot.status == "ready"
+          ' proof/claw-603/claim-activation.json >/dev/null
+
+          bun scripts/skills-sh-catalog/claw-603-claim-proof.ts \
+            > proof/claw-603/claim-lifecycle-stdout.json
+          jq -e '
+            .ok == true and
+            .target.productionWrites == 0 and
+            .paidScans == 0 and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0
+          ' proof/claw-603/claim-lifecycle.json >/dev/null
+
+          native_skill_id="$(
+            jq -r '
+              .restoration.restoredSource.skills[] |
+              select(.githubPath == "skills/html") |
+              ._id
+            ' proof/claw-603/claim-lifecycle.json
+          )"
+          [[ -n "$native_skill_id" ]]
+          bunx convex run --no-push canonicalTrending:getNativeSourceBatchInternal \
+            "$(jq -nc --arg skillId "$native_skill_id" '{skillIds:[$skillId]}')" \
+            > proof/claw-603/native-digest-after-claim.json
+          jq -e --arg skillId "$native_skill_id" '
+            .documentsRead == 1 and
+            (.page | length) == 1 and
+            .page[0].skillId == $skillId and
+            .page[0].publicVersion.status == "available"
+          ' proof/claw-603/native-digest-after-claim.json >/dev/null
+
+          current_hour_start="$(( $(date +%s) / 3600 * 3600 * 1000 ))"
+          occurred_at="$(( current_hour_start - 30 * 60 * 1000 ))"
+          day_start="$(( occurred_at / 86400000 * 86400000 ))"
+          identity_hash="claw-603-native-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bunx convex run --no-push downloadMetrics:recordDownloadMetricInternal \
+            "$(
+              jq -nc \
+                --arg skillId "$native_skill_id" \
+                --arg identityHash "$identity_hash" \
+                --argjson dayStart "$day_start" \
+                --argjson occurredAt "$occurred_at" \
+                '{
+                  target:{kind:"skill",id:$skillId},
+                  identityKind:"user",
+                  identityHash:$identityHash,
+                  dayStart:$dayStart,
+                  occurredAt:$occurredAt
+                }'
+            )" > proof/claw-603/native-download-event.json
+          bunx convex run --no-push skillStatEvents:processSkillStatEventsAction '{}' \
+            > proof/claw-603/native-event-processing.json
+          bunx convex run --no-push skillHourlyStats:getStateInternal '{}' \
+            > proof/claw-603/native-hourly-state.json
+          current_hour="$(( $(date +%s) / 3600 ))"
+          start_hour="$(( current_hour - 24 ))"
+          end_hour="$(( current_hour - 1 ))"
+          active_generation="$(jq -r '.activeGeneration' proof/claw-603/native-hourly-state.json)"
+          bunx convex run --no-push canonicalTrending:getHourlySourcePageInternal \
+            "$(
+              jq -nc \
+                --argjson startHour "$start_hour" \
+                --argjson endHour "$end_hour" \
+                --argjson maxGeneration "$active_generation" \
+                '{
+                  startHour:$startHour,
+                  endHour:$endHour,
+                  maxGeneration:$maxGeneration,
+                  paginationOpts:{cursor:null,numItems:250}
+                }'
+            )" > proof/claw-603/native-hourly-rows.json
+          jq -e --arg skillId "$native_skill_id" '
+            any(.page[]; .skillId == $skillId and .downloads > 0)
+          ' proof/claw-603/native-hourly-rows.json >/dev/null
+
+          post_mirror \
+            '{"operation":"deactivate","reason":"CLAW-603 native-only continuity proof"}' \
+            proof/claw-603/native-only-deactivation.json
+          jq -e '
+            .enabled == false and
+            .nativeTrending.status == "ready" and
+            .nativeTrending.sourceCounts.skillsShTrending == 0 and
+            ((.nativeTrending.sourceCounts.clawhubTrending // 0) +
+              (.nativeTrending.sourceCounts.clawhubRising // 0)) > 0 and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0
+          ' proof/claw-603/native-only-deactivation.json >/dev/null
+          curl --fail-with-body --silent --show-error \
+            "$TEST_SITE_URL/api/v1/trending?kind=skills&limit=100&x-vercel-protection-bypass=$VERCEL_AUTOMATION_BYPASS_SECRET" \
+            > proof/claw-603/native-only-trending.json
+          jq -e '
+            .snapshotId != null and
+            (.items | length) > 0 and
+            all(.items[]; .source == "clawhub")
+          ' proof/claw-603/native-only-trending.json >/dev/null
+
+          proof_complete=1
+          cleanup
+          trap - EXIT
+          jq -e '
+            .disableExit == 0 and
+            .tokenRotationExit == 0 and
+            .revokedStatus == "401"
+          ' proof/claw-603/claim-cleanup.json >/dev/null
+
+      - name: Upload CLAW-603 claim and native proof
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: skills-sh-sync-${{ github.run_id }}-${{ github.run_attempt }}
+          name: claw-603-claim-native-proof-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
-          path: skills-sh-sync-proof.json
+          path: proof/claw-603/
