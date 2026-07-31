@@ -23,7 +23,7 @@ jobs:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: 41a75789909e4d4e71bb5496a9fbcc7c13fdb303
+      DEPLOY_SHA: c1f6ba2f07b5fc084a31286a54e23e7bce404780
       LEADERBOARD_RUN_ID: hs7qke4za0khb8n1dn3ptdj1w98bkzr5
       TRENDING_RUN_ID: hs7ta346x92t82y7feq8smtej98bjakj
       TEST_SITE_URL: ${{ vars.SITE_URL }}
@@ -323,7 +323,7 @@ jobs:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: 41a75789909e4d4e71bb5496a9fbcc7c13fdb303
+      DEPLOY_SHA: c1f6ba2f07b5fc084a31286a54e23e7bce404780
     steps:
       - uses: actions/checkout@v7.0.1
         with:
