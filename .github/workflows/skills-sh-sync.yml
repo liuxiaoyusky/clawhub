@@ -1,55 +1,712 @@
-name: skills.sh Production Sync
+# One-off branch-only Test operator. Never merge: this path intentionally reuses
+# the default-branch workflow so workflow_dispatch can target the proof ref.
+name: CLAW-603 Permanent Test Trending Refresh
 
 on:
-  schedule:
-    - cron: "17 * * * *"
   workflow_dispatch:
 
 concurrency:
-  group: skills-sh-production-sync
+  group: claw-603-permanent-test-trending-refresh
   cancel-in-progress: false
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  sync:
+  refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    permissions:
-      contents: read
-      id-token: write
+    timeout-minutes: 120
     environment:
-      name: Production
+      name: Test
+    outputs:
+      proof_complete: ${{ steps.complete.outputs.proof_complete }}
+    env:
+      CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+      DEPLOY_SHA: 44cee65caca773d28d4bb83798571ffe4a0f2493
+      TEST_CONVEX_SITE_URL: ${{ vars.VITE_CONVEX_SITE_URL }}
+      TEST_SITE_URL: ${{ vars.SITE_URL }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      PRESERVED_LEADERBOARD_RUN_ID: hs7p0ega2hx7crj45c49ndr0x98bk8g9
+      BASELINE_TRENDING_RUN_ID: hs7vy3v4rphzc77nmk39k9jnmn8bjaka
     steps:
-      - name: Require main
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "::error::skills.sh production sync must run from refs/heads/main"
-            exit 1
-          fi
-
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: 44cee65caca773d28d4bb83798571ffe4a0f2493
 
       - uses: ./.github/actions/setup-bun
 
-      - name: Synchronize and automatically verify the production corpus
-        env:
-          CLAWHUB_SKILLS_SH_SYNC_OUTPUT: skills-sh-sync-proof.json
-          CLAWHUB_SKILLS_SH_SYNC_REASON: skills.sh production sync ${{ github.run_id }} attempt ${{ github.run_attempt }}
-          CLAWHUB_SKILLS_SH_SYNC_URL: https://clawhub.ai/ops/skills-sh/mirror
+      - name: Refresh Trending and activate the preserved full Test corpus
+        id: refresh
         run: |
           set -euo pipefail
-          bun scripts/skills-sh-catalog/sync.ts
+          mkdir -p proof/claw-603
+          operator_token=""
+          token_seeded=0
+          proof_complete=0
+          finalizing=0
+          mirror_url="$TEST_SITE_URL/ops/skills-sh/mirror-test"
 
-      - name: Upload skills.sh synchronization proof
-        if: ${{ !cancelled() }}
+          post_mirror() {
+            local body="$1"
+            local output="$2"
+            assert_deployed_sha || return 86
+            curl \
+              --fail-with-body --silent --show-error --request POST \
+              --max-time 900 \
+              --header "Authorization: Bearer $operator_token" \
+              --header "Content-Type: application/json" \
+              --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+              --data "$body" \
+              "$mirror_url" > "$output"
+          }
+
+          cleanup_deployed_sha="unknown"
+          assert_deployed_sha() {
+            local deployment_info
+            local deployment_info_exit
+            local parsed_sha
+            local parsed_sha_exit
+            cleanup_deployed_sha="unknown"
+            deployment_info="$(
+              bunx convex run --no-push appMeta:getDeploymentInfo '{}' 2>&1
+            )"
+            deployment_info_exit=$?
+            if [[ "$deployment_info_exit" == "0" ]]; then
+              parsed_sha="$(jq -er \
+                '.appBuildSha | select(type == "string" and length > 0)' \
+                <<< "$deployment_info" 2>/dev/null)"
+              parsed_sha_exit=$?
+              if [[ "$parsed_sha_exit" == "0" ]]; then
+                cleanup_deployed_sha="$parsed_sha"
+              fi
+            fi
+            [[ "$cleanup_deployed_sha" == "$DEPLOY_SHA" ]]
+          }
+
+          skip_cleanup_for_sha_mismatch() {
+            jq -n \
+              --arg deployedSha "$cleanup_deployed_sha" \
+              --arg expectedSha "$DEPLOY_SHA" \
+              '{
+                disableExit:null,
+                tokenRotationExit:null,
+                revokedStatus:"not-checked",
+                skippedReason:"deployment-sha-mismatch",
+                deployedSha:$deployedSha,
+                expectedSha:$expectedSha
+              }' > proof/claw-603/cleanup.json
+            echo "::error::Permanent Test SHA changed before cleanup: $cleanup_deployed_sha"
+          }
+
+          direct_deactivate() {
+            local reason="$1"
+            local output="$2"
+            assert_deployed_sha || return 86
+            bunx convex run --no-push skillsShMirrorVisibility:deactivateAndMaterializeInternal \
+              "$(jq -nc --arg reason "$reason" '{
+                actor:"CLAW-603 permanent Test Trending refresh",
+                reason:$reason,
+                confirm:"deactivate-skills-sh-public-test"
+              }')" > "$output" 2>&1
+          }
+
+          cleanup() {
+            set +e
+            if [[ "$token_seeded" != "1" ]]; then
+              jq -n '{disableExit:0,tokenRotationExit:0,revokedStatus:"not-created"}' \
+                > proof/claw-603/cleanup.json
+              set -e
+              return
+            fi
+
+            if ! assert_deployed_sha; then
+              skip_cleanup_for_sha_mismatch
+              set -e
+              return
+            fi
+
+            if [[ "$proof_complete" != "1" && "$finalizing" != "1" ]]; then
+              public_visible="unknown"
+              if post_mirror '{"operation":"status"}' proof/claw-603/failure-status.json; then
+                if jq -e '.invariants.publicVisible == false' \
+                  proof/claw-603/failure-status.json >/dev/null; then
+                  public_visible="false"
+                fi
+              fi
+              if [[ "$public_visible" != "false" ]]; then
+                direct_deactivate \
+                  "CLAW-603 Test Trending refresh failed closed" \
+                  proof/claw-603/failure-deactivation.json
+                deactivation_exit=$?
+                if [[ "$deactivation_exit" == "86" ]]; then
+                  skip_cleanup_for_sha_mismatch
+                  set -e
+                  return
+                fi
+              fi
+            fi
+
+            if ! assert_deployed_sha; then
+              skip_cleanup_for_sha_mismatch
+              set -e
+              return
+            fi
+            bunx convex run --no-push skillsShMirror:configureInternal \
+              '{
+                "actor":"CLAW-603 permanent Test Trending refresh",
+                "reason":"CLAW-603 Test Trending refresh cleanup",
+                "confirm":"enable-skills-sh-mirror-test",
+                "enabled":false,
+                "maxRowsPerRun":50000,
+                "maxRowsPerBatch":50,
+                "maxDetailBytes":65536
+              }' > proof/claw-603/control-disabled.json 2>&1
+            disable_exit=$?
+
+            if ! assert_deployed_sha; then
+              skip_cleanup_for_sha_mismatch
+              set -e
+              return
+            fi
+            bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}' >/dev/null
+            token_rotation_exit=$?
+
+            revoked_status="000"
+            if [[ -n "$operator_token" ]]; then
+              for _ in $(seq 1 10); do
+                revoked_status="$(
+                  curl --silent --output /dev/null --write-out '%{http_code}' \
+                    --request POST \
+                    --header "Authorization: Bearer $operator_token" \
+                    --header "Content-Type: application/json" \
+                    --data '{"operation":"mirror-status"}' \
+                    "$TEST_CONVEX_SITE_URL/api/v1/operator/skills-sh/catalog-test"
+                )"
+                if [[ "$revoked_status" == "401" ]]; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+
+            jq -n \
+              --argjson disableExit "$disable_exit" \
+              --argjson tokenRotationExit "$token_rotation_exit" \
+              --arg revokedStatus "$revoked_status" \
+              '{disableExit:$disableExit,tokenRotationExit:$tokenRotationExit,revokedStatus:$revokedStatus}' \
+              > proof/claw-603/cleanup.json
+
+            if [[
+              "$finalizing" == "1" &&
+              "$disable_exit" == "0" &&
+              "$token_rotation_exit" == "0" &&
+              "$revoked_status" == "401"
+            ]]; then
+              proof_complete=1
+            elif [[ "$finalizing" == "1" ]]; then
+              direct_deactivate \
+                "CLAW-603 Test Trending refresh cleanup verification failed closed" \
+                proof/claw-603/failure-deactivation.json
+              deactivation_exit=$?
+              if [[ "$deactivation_exit" == "86" ]]; then
+                skip_cleanup_for_sha_mismatch
+              fi
+            fi
+            set -e
+          }
+          trap cleanup EXIT
+
+          bunx convex run --no-push appMeta:getDeploymentInfo '{}' \
+            > proof/claw-603/deployment.json
+          bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
+            > proof/claw-603/capabilities-before.json
+          bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
+            > proof/claw-603/isolation-before.json
+          bunx convex run --no-push skillsShMirrorVisibility:auditInternal '{}' \
+            > proof/claw-603/audit-before.json
+          bunx convex run --no-push skillsShMirror:getStatusInternal '{}' \
+            > proof/claw-603/status-preflight.json
+
+          jq -e --arg sha "$DEPLOY_SHA" '.appBuildSha == $sha' \
+            proof/claw-603/deployment.json >/dev/null
+
+          if
+            jq -e --arg leaderboard "$PRESERVED_LEADERBOARD_RUN_ID" '
+              .control.enabled == false and
+              .control.paused == true and
+              .control.latestCompletedLeaderboardRunId == $leaderboard and
+              .invariants.publicVisible == true and
+              .invariants.scanPlanningEnabled == false and
+              .invariants.scanAdmissionEnabled == false and
+              ([.runs[] | select(
+                .status == "running" or
+                .status == "paused" or
+                .status == "reconciling"
+              )] | length == 0) and
+              ([.runs[] | select(.runId == $leaderboard)][0] as $leaderboardRun |
+                $leaderboardRun.status == "completed" and
+                ($leaderboardRun.activatedTrendingRunId | type == "string") and
+                ($leaderboardRun.activationSnapshotId | type == "string") and
+                ($leaderboardRun.activatedAt | type == "number") and
+                any(.runs[];
+                  .runId == $leaderboardRun.activatedTrendingRunId and
+                  .sourceView == "trending" and
+                  .status == "completed"
+                )
+              )
+            ' proof/claw-603/status-preflight.json >/dev/null &&
+              jq -e '
+                .skillsSh.publicCatalogEnabled == true and
+                .skillsSh.discoveryEnabled == true and
+                .skillsSh.writesEnabled == false and
+                .skillsSh.scanPlanningEnabled == false and
+                .skillsSh.scanAdmissionEnabled == false
+              ' proof/claw-603/capabilities-before.json >/dev/null &&
+              jq -e '
+                .ok == true and
+                .counts.eligible > 0 and
+                .counts.eligiblePublished == .counts.eligible and
+                .counts.hiddenEligible == 0 and
+                .counts.unsafePublished == 0 and
+                .scansPlanned == 0 and
+                .scansAdmitted == 0
+              ' proof/claw-603/audit-before.json >/dev/null
+          then
+            jq -n \
+              --arg sourceSha "$DEPLOY_SHA" \
+              --arg leaderboardRunId "$PRESERVED_LEADERBOARD_RUN_ID" \
+              --slurpfile deployment proof/claw-603/deployment.json \
+              --slurpfile status proof/claw-603/status-preflight.json \
+              --slurpfile audit proof/claw-603/audit-before.json \
+              --slurpfile capabilities proof/claw-603/capabilities-before.json \
+              --slurpfile isolation proof/claw-603/isolation-before.json \
+              '{
+                ok:true,
+                reusedVerifiedActivation:true,
+                sourceSha:$sourceSha,
+                leaderboardRunId:$leaderboardRunId,
+                deployment:$deployment[0],
+                status:$status[0],
+                audit:$audit[0],
+                capabilities:$capabilities[0],
+                isolation:$isolation[0]
+              }' > proof/claw-603/summary.json
+            proof_complete=1
+            exit 0
+          fi
+
+          jq -e '
+            .skillsSh.publicCatalogEnabled == false and
+            .skillsSh.discoveryEnabled == false and
+            .skillsSh.writesEnabled == false and
+            .skillsSh.scanPlanningEnabled == false and
+            .skillsSh.scanAdmissionEnabled == false
+          ' proof/claw-603/capabilities-before.json >/dev/null
+          jq -e '
+            .ok == true and
+            .counts.eligible > 0 and
+            .counts.hiddenEligible == 0 and
+            .counts.unsafePublished == 0 and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0
+          ' proof/claw-603/audit-before.json >/dev/null
+
+          assert_deployed_sha
+          token_seed="$(bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}')"
+          token_seeded=1
+          operator_token="$(jq -r '.admin.token // empty' <<< "$token_seed")"
+          token_seed=""
+          [[ -n "$operator_token" ]]
+          echo "::add-mask::$operator_token"
+
+          post_mirror '{"operation":"status"}' proof/claw-603/status-before.json
+          jq -e \
+            --arg leaderboard "$PRESERVED_LEADERBOARD_RUN_ID" \
+            --arg baselineTrending "$BASELINE_TRENDING_RUN_ID" '
+            .control.enabled == false and
+            .control.paused == true and
+            .control.latestCompletedLeaderboardRunId == $leaderboard and
+            .invariants.publicVisible == false and
+            .invariants.scanPlanningEnabled == false and
+            .invariants.scanAdmissionEnabled == false and
+            ([.runs[] | select(
+              .runId == $baselineTrending and
+              .sourceView == "trending" and
+              .status == "completed"
+            )][0] as $baselineRun |
+              [.runs[] | select(
+                .status == "running" or
+                .status == "paused" or
+                .status == "reconciling"
+              )] as $activeRuns |
+              [.runs[] | select(
+                .sourceView == "trending" and
+                .status == "completed"
+              )][0] as $latestRun |
+              $baselineRun.runId == $baselineTrending and
+              ($activeRuns | length) <= 1 and
+              all($activeRuns[];
+                .sourceView == "trending" and
+                .startedAt > $baselineRun.startedAt
+              ) and
+              $latestRun.startedAt >= $baselineRun.startedAt
+            )
+          ' proof/claw-603/status-before.json >/dev/null
+
+          post_mirror \
+            '{"operation":"configure","enabled":true,"reason":"CLAW-603 exact-SHA Test Trending refresh"}' \
+            proof/claw-603/configured.json
+          post_mirror \
+            '{"operation":"prepare-native-trending","reason":"CLAW-603 native-only continuity before Test refresh"}' \
+            proof/claw-603/native-before.json
+          jq -e '
+            .ok == true and
+            .nativeTrending.status == "ready" and
+            .nativeTrending.sourceCounts.skillsShTrending == 0 and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0
+          ' proof/claw-603/native-before.json >/dev/null
+
+          latest_trending_run_id="$(jq -r '
+            [.runs[] | select(.sourceView == "trending" and .status == "completed")][0].runId
+          ' proof/claw-603/status-before.json)"
+          active_trending_run_id="$(jq -r '
+            [.runs[] | select(
+              .sourceView == "trending" and
+              (.status == "running" or .status == "paused" or .status == "reconciling")
+            )][0].runId // empty
+          ' proof/claw-603/status-before.json)"
+          [[ -n "$latest_trending_run_id" ]]
+          trending_reused=0
+          if [[ -n "$active_trending_run_id" ]]; then
+            trending_reused=1
+            post_mirror \
+              "$(jq -nc --arg runId "$active_trending_run_id" '{operation:"run",runId:$runId}')" \
+              proof/claw-603/trending-current.json
+            if [[ "$(jq -r '.status' proof/claw-603/trending-current.json)" == "paused" ]]; then
+              post_mirror \
+                "$(jq -nc --arg runId "$active_trending_run_id" '{
+                  operation:"resume",
+                  runId:$runId,
+                  reason:"CLAW-603 interrupted Test Trending recovery"
+                }')" \
+                proof/claw-603/trending-current.json
+            fi
+            cp proof/claw-603/trending-current.json proof/claw-603/trending-reused.json
+          elif [[ "$latest_trending_run_id" == "$BASELINE_TRENDING_RUN_ID" ]]; then
+            post_mirror \
+              '{"operation":"start-trending","reason":"CLAW-603 exact-SHA fresh Test Trending capture"}' \
+              proof/claw-603/trending-start.json
+            cp proof/claw-603/trending-start.json proof/claw-603/trending-current.json
+          else
+            trending_reused=1
+            post_mirror \
+              "$(jq -nc --arg runId "$latest_trending_run_id" '{operation:"run",runId:$runId}')" \
+              proof/claw-603/trending-current.json
+            cp proof/claw-603/trending-current.json proof/claw-603/trending-reused.json
+          fi
+          trending_run_id="$(jq -r '.runId // empty' proof/claw-603/trending-current.json)"
+          [[ -n "$trending_run_id" ]]
+
+          steps=0
+          failures=0
+          while true; do
+            run_status="$(jq -r '.status // empty' proof/claw-603/trending-current.json)"
+            if [[ "$run_status" == "completed" ]]; then
+              break
+            fi
+            if [[ "$run_status" == "reconciling" ]]; then
+              post_mirror \
+                "$(jq -nc --arg runId "$trending_run_id" '{operation:"reconcile",runId:$runId,limit:250}')" \
+                proof/claw-603/trending-next.json
+            elif [[ "$run_status" == "running" ]]; then
+              page="$(jq -r '.page' proof/claw-603/trending-current.json)"
+              offset="$(jq -r '.offset' proof/claw-603/trending-current.json)"
+              set +e
+              post_mirror \
+                "$(jq -nc --arg runId "$trending_run_id" --argjson page "$page" --argjson offset "$offset" '{operation:"step-trending",runId:$runId,page:$page,offset:$offset}')" \
+                proof/claw-603/trending-next.json
+              step_exit=$?
+              set -e
+              if [[ "$step_exit" != "0" ]]; then
+                failures=$((failures + 1))
+                [[ "$failures" -le 60 ]]
+                sleep 15
+                post_mirror \
+                  "$(jq -nc --arg runId "$trending_run_id" '{operation:"run",runId:$runId}')" \
+                  proof/claw-603/trending-next.json
+              fi
+            else
+              echo "::error::Unexpected Trending run status: $run_status"
+              exit 1
+            fi
+            mv proof/claw-603/trending-next.json proof/claw-603/trending-current.json
+            steps=$((steps + 1))
+            [[ "$steps" -le 2500 ]]
+          done
+          cp proof/claw-603/trending-current.json proof/claw-603/trending-complete.json
+
+          jq -e '
+            .status == "completed" and
+            .sourceView == "trending" and
+            .sourceTotal == .counts.observed and
+            .counts.trendingJoined + .counts.trendingMissing == .counts.observed and
+            .counts.trendingHydrationAttempts <= 50 and
+            .counts.scansPlanned == 0 and
+            .counts.scansAdmitted == 0 and
+            .completedAt > .startedAt
+          ' proof/claw-603/trending-complete.json >/dev/null
+
+          bunx convex run --no-push appMeta:getDeploymentInfo '{}' \
+            > proof/claw-603/deployment-before-activation.json
+          jq -e --arg sha "$DEPLOY_SHA" '.appBuildSha == $sha' \
+            proof/claw-603/deployment-before-activation.json >/dev/null
+
+          post_mirror \
+            '{"operation":"verify-activate","reason":"CLAW-603 exact-SHA full Test corpus activation"}' \
+            proof/claw-603/activation.json
+          jq -e --arg leaderboard "$PRESERVED_LEADERBOARD_RUN_ID" --arg trending "$trending_run_id" '
+            .activated == true and
+            .leaderboard.runId == $leaderboard and
+            .trending.runId == $trending and
+            .corpus.scansPlanned == 0 and
+            .corpus.scansAdmitted == 0 and
+            .trendingSnapshot.status == "ready" and
+            .trendingSnapshot.sourceCounts.skillsShTrending > 0
+          ' proof/claw-603/activation.json >/dev/null
+
+          post_mirror \
+            '{"operation":"configure","enabled":false,"reason":"CLAW-603 exact-SHA Test proof complete; controls clean"}' \
+            proof/claw-603/configured-off.json
+          post_mirror '{"operation":"status"}' proof/claw-603/status-after.json
+          bunx convex run --no-push skillsShMirrorVisibility:auditInternal '{}' \
+            > proof/claw-603/audit-after.json
+          bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
+            > proof/claw-603/isolation-after.json
+          bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
+            > proof/claw-603/capabilities-after.json
+
+          jq -e --arg leaderboard "$PRESERVED_LEADERBOARD_RUN_ID" --arg trending "$trending_run_id" '
+            .control.enabled == false and
+            .control.paused == true and
+            .control.latestCompletedLeaderboardRunId == $leaderboard and
+            .invariants.publicVisible == true and
+            .invariants.scanPlanningEnabled == false and
+            .invariants.scanAdmissionEnabled == false and
+            ([.runs[] | select(
+              .status == "running" or
+              .status == "paused" or
+              .status == "reconciling"
+            )] | length == 0) and
+            any(.runs[]; .runId == $trending and .status == "completed")
+          ' proof/claw-603/status-after.json >/dev/null
+          jq -e '
+            .ok == true and
+            .counts.eligible > 0 and
+            .counts.eligiblePublished == .counts.eligible and
+            .counts.hiddenEligible == 0 and
+            .counts.unsafePublished == 0 and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0
+          ' proof/claw-603/audit-after.json >/dev/null
+          jq -e '
+            .skillsSh.publicCatalogEnabled == true and
+            .skillsSh.discoveryEnabled == true and
+            .skillsSh.writesEnabled == false and
+            .skillsSh.scanPlanningEnabled == false and
+            .skillsSh.scanAdmissionEnabled == false
+          ' proof/claw-603/capabilities-after.json >/dev/null
+          diff -u proof/claw-603/isolation-before.json proof/claw-603/isolation-after.json
+
+          finalizing=1
+          cleanup
+          trap - EXIT
+          [[ "$proof_complete" == "1" ]]
+
+          jq -n \
+            --arg sourceSha "$DEPLOY_SHA" \
+            --arg leaderboardRunId "$PRESERVED_LEADERBOARD_RUN_ID" \
+            --arg trendingRunId "$trending_run_id" \
+            --argjson steps "$steps" \
+            --argjson trendingReused "$trending_reused" \
+            --slurpfile deployment proof/claw-603/deployment.json \
+            --slurpfile deploymentBeforeActivation proof/claw-603/deployment-before-activation.json \
+            --slurpfile nativeBefore proof/claw-603/native-before.json \
+            --slurpfile trending proof/claw-603/trending-complete.json \
+            --slurpfile activation proof/claw-603/activation.json \
+            --slurpfile audit proof/claw-603/audit-after.json \
+            --slurpfile capabilities proof/claw-603/capabilities-after.json \
+            --slurpfile cleanup proof/claw-603/cleanup.json \
+            '{
+              ok:true,
+              sourceSha:$sourceSha,
+              leaderboardRunId:$leaderboardRunId,
+              trendingRunId:$trendingRunId,
+              trendingSteps:$steps,
+              trendingReused:$trendingReused,
+              deployment:$deployment[0],
+              deploymentBeforeActivation:$deploymentBeforeActivation[0],
+              nativeBefore:$nativeBefore[0],
+              trending:$trending[0],
+              activation:$activation[0],
+              audit:$audit[0],
+              capabilities:$capabilities[0],
+              cleanup:$cleanup[0]
+            }' > proof/claw-603/summary.json
+
+      - name: Upload permanent Test activation proof
+        if: ${{ always() }}
+        # This artifact is the operator handoff; the required permanent record is
+        # the CLAW-603 Linear proof comment written after API/browser validation.
         uses: actions/upload-artifact@v7
         with:
-          name: skills-sh-sync-${{ github.run_id }}-${{ github.run_attempt }}
+          name: claw-603-test-trending-refresh-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
-          path: skills-sh-sync-proof.json
+          path: proof/claw-603
+
+      - name: Mark durable proof complete
+        id: complete
+        run: echo 'proof_complete=1' >> "$GITHUB_OUTPUT"
+
+  cleanup-backstop:
+    if: ${{ always() }}
+    needs: refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: Test
+    env:
+      CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+      DEPLOY_SHA: 44cee65caca773d28d4bb83798571ffe4a0f2493
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: 44cee65caca773d28d4bb83798571ffe4a0f2493
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Deactivate incomplete Test proof and clean controls
+        run: |
+          set -uo pipefail
+          cleanup_failed=0
+          deployed_sha="unknown"
+          assert_deployed_sha() {
+            local deployment_info
+            local deployment_info_exit
+            local parsed_sha
+            local parsed_sha_exit
+            deployed_sha="unknown"
+            deployment_info="$(bunx convex run --no-push appMeta:getDeploymentInfo '{}' 2>&1)"
+            deployment_info_exit=$?
+            if [[ "$deployment_info_exit" == "0" ]]; then
+              parsed_sha="$(jq -er '.appBuildSha | select(type == "string" and length > 0)' \
+                <<< "$deployment_info" 2>/dev/null)"
+              parsed_sha_exit=$?
+              if [[ "$parsed_sha_exit" == "0" ]]; then
+                deployed_sha="$parsed_sha"
+              fi
+            fi
+            [[ "$deployed_sha" == "$DEPLOY_SHA" ]]
+          }
+
+          require_deployed_sha() {
+            if assert_deployed_sha; then
+              return 0
+            fi
+            echo "::error::Permanent Test SHA changed before CLAW-603 backstop mutation: $deployed_sha"
+            return 1
+          }
+
+          require_deployed_sha || exit 1
+
+          proof_succeeded=0
+          if [[
+            "${{ needs.refresh.result }}" == "success" &&
+            "${{ needs.refresh.outputs.proof_complete }}" == "1" &&
+            "$deployed_sha" == "$DEPLOY_SHA"
+          ]]; then
+            proof_succeeded=1
+          fi
+
+          deactivation_exit=0
+          expected_public_visible=true
+          if [[
+            "$proof_succeeded" != "1"
+          ]]; then
+            expected_public_visible=false
+            require_deployed_sha || exit 1
+            bunx convex run --no-push skillsShMirrorVisibility:deactivateAndMaterializeInternal \
+              '{
+                "actor":"CLAW-603 permanent Test Trending refresh backstop",
+                "reason":"CLAW-603 Test proof incomplete; fail closed",
+                "confirm":"deactivate-skills-sh-public-test"
+              }'
+            deactivation_exit=$?
+            if [[ "$deactivation_exit" != "0" ]]; then
+              cleanup_failed=1
+              echo "::error::Permanent Test fail-closed deactivation failed"
+            fi
+          fi
+
+          require_deployed_sha || exit 1
+          bunx convex run --no-push skillsShMirror:configureInternal \
+            '{
+              "actor":"CLAW-603 permanent Test Trending refresh backstop",
+              "reason":"CLAW-603 Test proof backstop cleanup",
+              "confirm":"enable-skills-sh-mirror-test",
+              "enabled":false,
+              "maxRowsPerRun":50000,
+              "maxRowsPerBatch":50,
+              "maxDetailBytes":65536
+            }'
+          disable_exit=$?
+          if [[ "$disable_exit" != "0" ]]; then
+            cleanup_failed=1
+            echo "::error::Permanent Test mirror control cleanup failed"
+          fi
+
+          require_deployed_sha || exit 1
+          bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}' >/dev/null
+          token_rotation_exit=$?
+          if [[ "$token_rotation_exit" != "0" ]]; then
+            cleanup_failed=1
+            echo "::error::Permanent Test operator token rotation failed"
+          fi
+
+          status="$(bunx convex run --no-push skillsShMirror:getStatusInternal '{}')"
+          status_exit=$?
+          capabilities="$(bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}')"
+          capabilities_exit=$?
+          if [[ "$status_exit" != "0" || "$capabilities_exit" != "0" ]]; then
+            cleanup_failed=1
+            echo "::error::Permanent Test cleanup readback failed"
+          else
+            jq -e --argjson expectedPublicVisible "$expected_public_visible" '
+              .control.enabled == false and
+              .control.paused == true and
+              .invariants.publicVisible == $expectedPublicVisible and
+              .invariants.installable == $expectedPublicVisible and
+              .invariants.scanPlanningEnabled == false and
+              .invariants.scanAdmissionEnabled == false and
+              ([.runs[] | select(
+                .status == "running" or
+                .status == "paused" or
+                .status == "reconciling"
+              )] | length == 0)
+            ' <<< "$status" >/dev/null
+            status_assert_exit=$?
+            jq -e --argjson expectedPublicVisible "$expected_public_visible" '
+              .skillsSh.publicCatalogEnabled == $expectedPublicVisible and
+              .skillsSh.discoveryEnabled == $expectedPublicVisible and
+              .skillsSh.writesEnabled == false and
+              .skillsSh.scanPlanningEnabled == false and
+              .skillsSh.scanAdmissionEnabled == false
+            ' <<< "$capabilities" >/dev/null
+            capabilities_assert_exit=$?
+            if [[ "$status_assert_exit" != "0" || "$capabilities_assert_exit" != "0" ]]; then
+              cleanup_failed=1
+              echo "::error::Permanent Test cleanup invariants failed"
+            fi
+          fi
+
+          exit "$cleanup_failed"
