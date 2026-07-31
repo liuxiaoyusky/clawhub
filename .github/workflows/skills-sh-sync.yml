@@ -386,7 +386,13 @@ jobs:
             "$TEST_CONVEX_SITE_URL/api/v1/trending?kind=skills&limit=100" \
             > proof/claw-603/native-only-before-import-api.json
           jq -e '
-            .enabled == false and
+            .enabled == true and
+            .paused == false and
+            .publicGateEnabled == false
+          ' proof/claw-603/native-only-configured.json >/dev/null
+          jq -e '
+            .ok == true and
+            .environment == "test" and
             .nativeTrending.status == "ready" and
             .nativeTrending.sourceCounts.skillsShTrending == 0 and
             ((.nativeTrending.sourceCounts.clawhubTrending // 0) +
