@@ -12,6 +12,9 @@ permissions:
 
 jobs:
   permanent-test-claim:
+    if: >-
+      github.ref == 'refs/heads/pe/claw-603-final-proof' &&
+      github.actor == 'Patrick-Erichsen'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment:
