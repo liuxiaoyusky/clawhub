@@ -60,6 +60,19 @@ jobs:
               "$mirror_url" > "$output"
           }
 
+          post_mirror_read() {
+            local body="$1"
+            local output="$2"
+            local attempt=0
+            until post_mirror "$body" "$output"; do
+              attempt=$((attempt + 1))
+              if [[ "$attempt" -ge 12 ]]; then
+                return 1
+              fi
+              sleep 15
+            done
+          }
+
           cleanup_deployed_sha="unknown"
           assert_deployed_sha() {
             local deployment_info
@@ -127,7 +140,7 @@ jobs:
 
             if [[ "$proof_complete" != "1" && "$finalizing" != "1" ]]; then
               public_visible="unknown"
-              if post_mirror '{"operation":"status"}' proof/claw-603/failure-status.json; then
+              if post_mirror_read '{"operation":"status"}' proof/claw-603/failure-status.json; then
                 if jq -e '.invariants.publicVisible == false' \
                   proof/claw-603/failure-status.json >/dev/null; then
                   public_visible="false"
@@ -319,7 +332,7 @@ jobs:
           [[ -n "$operator_token" ]]
           echo "::add-mask::$operator_token"
 
-          post_mirror '{"operation":"status"}' proof/claw-603/status-before.json
+          post_mirror_read '{"operation":"status"}' proof/claw-603/status-before.json
           jq -e \
             --arg leaderboard "$PRESERVED_LEADERBOARD_RUN_ID" \
             --arg baselineTrending "$BASELINE_TRENDING_RUN_ID" '
@@ -397,7 +410,7 @@ jobs:
           trending_reused=0
           if [[ -n "$active_trending_run_id" ]]; then
             trending_reused=1
-            post_mirror \
+            post_mirror_read \
               "$(jq -nc --arg runId "$active_trending_run_id" '{operation:"run",runId:$runId}')" \
               proof/claw-603/trending-current.json
             if [[ "$(jq -r '.status' proof/claw-603/trending-current.json)" == "paused" ]]; then
@@ -417,7 +430,7 @@ jobs:
             cp proof/claw-603/trending-start.json proof/claw-603/trending-current.json
           else
             trending_reused=1
-            post_mirror \
+            post_mirror_read \
               "$(jq -nc --arg runId "$latest_trending_run_id" '{operation:"run",runId:$runId}')" \
               proof/claw-603/trending-current.json
             cp proof/claw-603/trending-current.json proof/claw-603/trending-reused.json
@@ -449,7 +462,7 @@ jobs:
                 failures=$((failures + 1))
                 [[ "$failures" -le 60 ]]
                 sleep 15
-                post_mirror \
+                post_mirror_read \
                   "$(jq -nc --arg runId "$trending_run_id" '{operation:"run",runId:$runId}')" \
                   proof/claw-603/trending-next.json
               fi
@@ -495,7 +508,7 @@ jobs:
           post_mirror \
             '{"operation":"configure","enabled":false,"reason":"CLAW-603 exact-SHA Test proof complete; controls clean"}' \
             proof/claw-603/configured-off.json
-          post_mirror '{"operation":"status"}' proof/claw-603/status-after.json
+          post_mirror_read '{"operation":"status"}' proof/claw-603/status-after.json
           bunx convex run --no-push skillsShMirrorVisibility:auditInternal '{}' \
             > proof/claw-603/audit-after.json
           bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
