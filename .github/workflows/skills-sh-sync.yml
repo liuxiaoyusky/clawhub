@@ -512,7 +512,11 @@ jobs:
             .skillsSh.scanAdmissionEnabled == false
           ' proof/claw-603/capabilities-after.json >/dev/null
           jq -e '
-            .counts.total == (.counts.active + .counts.tombstoned) and
+            .counts.total ==
+              (.counts.active + .counts.tombstoned + .counts.claimPromoted) and
+            .counts.sourceEligible == (.counts.eligible + .counts.claimExcluded) and
+            .counts.claimExcluded ==
+              (.counts.claimFailed + .counts.claimPromoted + .counts.claimRetrying) and
             .counts.eligible == .counts.eligiblePublished and
             .counts.hiddenEligible == 0 and
             .counts.unsafePublished == 0 and
