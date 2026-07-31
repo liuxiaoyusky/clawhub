@@ -1012,7 +1012,7 @@ jobs:
           ' proof/claw-603/provenance-summary.json >/dev/null
           jq -e \
             --slurpfile provenance proof/claw-603/provenance-summary.json '
-              .counts.sourceEligible == $provenance[0].exactSourceEligible and
+              .counts.eligible == $provenance[0].exactSourceEligible and
               .counts.eligiblePublished == $provenance[0].exactSourceEligiblePublished
             ' proof/claw-603/visibility-audit.json >/dev/null
           jq '{

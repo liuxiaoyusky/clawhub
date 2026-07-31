@@ -31,4 +31,11 @@ describe("CLAW-603 permanent Test proof workflow", () => {
       '"$public_site/api/v1/search?q=$encoded_slug&mode=exact&limit=10" \\\n            > proof/claw-603/search-reactivated.json',
     );
   });
+
+  it("compares unclaimed provenance with the audit's unclaimed eligible partition", async () => {
+    const workflow = await readFile(".github/workflows/skills-sh-sync.yml", "utf8");
+
+    expect(workflow).toContain(".counts.eligible == $provenance[0].exactSourceEligible");
+    expect(workflow).not.toContain(".counts.sourceEligible == $provenance[0].exactSourceEligible");
+  });
 });
