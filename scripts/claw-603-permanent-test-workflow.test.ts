@@ -23,4 +23,12 @@ describe("CLAW-603 permanent Test proof workflow", () => {
     expect(workflow).toContain("proof_complete=1\n          trap - EXIT");
     expect(workflow).not.toContain('[[ "$proof_complete" == "1" ]]');
   });
+
+  it("proves reactivated search through the supported public slug query", async () => {
+    const workflow = await readFile(".github/workflows/skills-sh-sync.yml", "utf8");
+
+    expect(workflow).toContain(
+      '"$public_site/api/v1/search?q=$encoded_slug&mode=exact&limit=10" \\\n            > proof/claw-603/search-reactivated.json',
+    );
+  });
 });

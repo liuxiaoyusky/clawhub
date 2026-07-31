@@ -855,7 +855,7 @@ jobs:
             > proof/claw-603/capabilities-reactivated.json
           post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-reactivated.json
           curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/search?q=$encoded_ref&mode=exact&limit=10" \
+            "$public_site/api/v1/search?q=$encoded_slug&mode=exact&limit=10" \
             > proof/claw-603/search-reactivated.json
           curl --fail-with-body --silent --show-error \
             "$public_site/api/v1/skills-sh/$encoded_owner/$encoded_repo/$encoded_slug" \
