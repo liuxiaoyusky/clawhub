@@ -3,7 +3,7 @@
 /* oxlint-disable typescript/no-explicit-any -- Test-only proof decodes live Convex JSON. */
 
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { appendFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const EXTERNAL_ID = "patrick-erichsen/skills/html";
@@ -82,6 +82,7 @@ const mirrorGateUrl = requireEnv("CLAWHUB_TEST_MIRROR_GATE_URL");
 const outputPath = resolve(
   process.env.CLAWHUB_CLAIM_PROOF_OUTPUT?.trim() || "claw-603-claim-proof.json",
 );
+const checkpointPath = `${outputPath}.checkpoints.jsonl`;
 
 async function postMirror(body: Record<string, unknown>) {
   const response = await fetchCapture(mirrorGateUrl, {
@@ -174,6 +175,40 @@ async function sourceState() {
       })),
     };
   `);
+}
+
+let checkpointSequence = 0;
+
+async function writeCheckpoint(stage: string, details: Record<string, unknown> = {}) {
+  const capture = async (read: () => Promise<unknown>) => {
+    try {
+      return { ok: true, value: await read() };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const mirror = await capture(readMirror);
+  const source = await capture(sourceState);
+  const queues = await capture(queueState);
+  const isolation = await capture(() => runConvex("skillsShMirror:getIsolationInternal", {}));
+  const status = await capture(() => postMirror({ operation: "status" }));
+  checkpointSequence += 1;
+  const captures = { mirror, source, queues, isolation, status };
+  await appendFile(
+    checkpointPath,
+    `${JSON.stringify({
+      sequence: checkpointSequence,
+      stage,
+      observedAt: new Date().toISOString(),
+      details,
+      ...captures,
+    })}\n`,
+    "utf8",
+  );
+  const failedReads = Object.entries(captures)
+    .filter(([, captureResult]) => !captureResult.ok)
+    .map(([name]) => name);
+  assert(failedReads.length === 0, `checkpoint ${stage} failed reads: ${failedReads.join(", ")}`);
 }
 
 function buildSnapshot(source: Record<string, any>, commit: string, htmlContentHash: string) {
@@ -296,6 +331,7 @@ async function observeCorrectedMirror(
     maxRowsPerBatch: 50,
     maxDetailBytes: 65536,
   });
+  await writeCheckpoint(`${label}:configured`);
   const run = await runConvex("skillsShMirror:startRunInternal", {
     actor: "CLAW-603 permanent Test claim proof",
     reason: `${label} observation`,
@@ -306,6 +342,7 @@ async function observeCorrectedMirror(
     sourceRequests: 0,
     sourceDurationMs: 0,
   });
+  await writeCheckpoint(`${label}:run-started`, { run });
   const leaseToken = `claw-603-${label}-${Date.now()}`;
   await runConvex("skillsShMirror:claimBatchLeaseInternal", {
     runId: run.runId,
@@ -313,6 +350,7 @@ async function observeCorrectedMirror(
     offset: 0,
     leaseToken,
   });
+  await writeCheckpoint(`${label}:lease-claimed`, { runId: run.runId, page: 0, offset: 0 });
   const processed = await runConvex("skillsShMirror:processBatchInternal", {
     runId: run.runId,
     page: 0,
@@ -325,12 +363,14 @@ async function observeCorrectedMirror(
     sourceBytes: 0,
     rows: [mirrorRow(baseState, commit, contentHash, upstreamInstalls)],
   });
+  await writeCheckpoint(`${label}:row-processed`, { runId: run.runId, processed });
   const canceled = await runConvex("skillsShMirror:cancelRunInternal", {
     runId: run.runId,
     actor: "CLAW-603 permanent Test claim proof",
     reason: `${label} row-scoped observation complete`,
     confirm: "cancel-skills-sh-mirror-test-run",
   });
+  await writeCheckpoint(`${label}:run-canceled`, { runId: run.runId, canceled });
   await runConvex("skillsShMirror:configureInternal", {
     actor: "CLAW-603 permanent Test claim proof",
     reason: `${label} observation complete`,
@@ -340,6 +380,7 @@ async function observeCorrectedMirror(
     maxRowsPerBatch: 50,
     maxDetailBytes: 65536,
   });
+  await writeCheckpoint(`${label}:control-disabled`, { runId: run.runId });
   return { run, processed, canceled };
 }
 
@@ -360,12 +401,20 @@ const htmlBefore = nativeBefore.skills.find(
 assert(htmlBefore, "controlled HTML skill is missing");
 assert(htmlBefore.githubCurrentCommit === COMMIT_A, "controlled HTML commit mismatch");
 assert(htmlBefore.githubCurrentContentHash === HASH_A, "controlled HTML hash mismatch");
+await writeCheckpoint("pre-mutation-baseline", {
+  isolationBefore,
+  queuesBefore,
+  mirrorBefore,
+  nativeBefore,
+});
 
 const star = await runConvex("stars:addStarInternal", {
   userId: htmlBefore.ownerUserId,
   skillId: htmlBefore._id,
 });
+await writeCheckpoint("bookmark-added", { star });
 const initialClaim = await applyClaimedSnapshot(nativeBefore, COMMIT_A, HASH_A);
+await writeCheckpoint("first-claim-pending", { initialClaim });
 const pendingMirror = await readMirror();
 const pendingSearch = await fetchCapture(
   `${PUBLIC_SITE}/api/v1/search?q=${encodeURIComponent(`skills-sh:${EXTERNAL_ID}`)}&mode=exact&limit=10`,
@@ -386,6 +435,7 @@ const firstFailure = await runConvex("skillsShClaims:applyTestVerdictInternal", 
   verdict: "fail",
   confirm: "fail-skills-sh-test-claim",
 });
+await writeCheckpoint("first-claim-failed", { firstFailure });
 const failedMirror = await readMirror();
 const failedDetail = await fetchCapture(`${PUBLIC_SITE}/api/v1/skills-sh/${EXTERNAL_ID}`);
 assert(
@@ -405,6 +455,7 @@ const correctedObservation = await observeCorrectedMirror(
 );
 const sourceAfterFailure = await sourceState();
 const correctedClaim = await applyClaimedSnapshot(sourceAfterFailure, COMMIT_B, HASH_B);
+await writeCheckpoint("corrected-claim-pending", { correctedClaim });
 const retryMirror = await readMirror();
 assert(retryMirror.digest?.claimStatus === "pending", "corrected claim did not become pending");
 assert(retryMirror.digest?.claimAttempt === 2, "corrected claim attempt was not two");
@@ -416,6 +467,7 @@ const correctedPass = await runConvex("skillsShClaims:applyTestVerdictInternal",
   verdict: "pass",
   confirm: "pass-skills-sh-test-claim",
 });
+await writeCheckpoint("corrected-claim-passed", { correctedPass });
 const promotedMirror = await readMirror();
 const promotedAlias = await runConvex("skillsShMirrorPublic:getByRoute", {
   owner: "patrick-erichsen",
@@ -447,12 +499,14 @@ assert(
 );
 
 const nativeFollowup = await applyNativeSnapshot(nativePromoted, COMMIT_C, HASH_C);
+await writeCheckpoint("native-followup-pending", { nativeFollowup });
 const followupFailure = await runConvex("skillsShClaims:applyTestVerdictInternal", {
   externalId: EXTERNAL_ID,
   phase: "native-followup",
   verdict: "fail",
   confirm: "fail-skills-sh-test-native-followup",
 });
+await writeCheckpoint("native-followup-failed", { followupFailure });
 const aliasAfterFollowupFailure = await runConvex("skillsShMirrorPublic:getByRoute", {
   owner: "patrick-erichsen",
   repo: "skills",
@@ -470,12 +524,14 @@ assert(
 
 const sourceAfterFollowupFailure = await sourceState();
 const restoration = await applyNativeSnapshot(sourceAfterFollowupFailure, COMMIT_A, HASH_A);
+await writeCheckpoint("native-restoration-pending", { restoration });
 const restorationPass = await runConvex("skillsShClaims:applyTestVerdictInternal", {
   externalId: EXTERNAL_ID,
   phase: "native-followup",
   verdict: "pass",
   confirm: "pass-skills-sh-test-native-followup",
 });
+await writeCheckpoint("native-restoration-passed", { restorationPass });
 const restoredSource = await sourceState();
 const restoredHtml = restoredSource.skills.find(
   (skill: Record<string, any>) => skill.githubPath === PATH,
@@ -508,6 +564,7 @@ const starRestoration = star.alreadyStarred
       userId: htmlBefore.ownerUserId,
       skillId: htmlBefore._id,
     });
+await writeCheckpoint("bookmark-restored", { starRestoration });
 const sourceAfterStarRestoration = await sourceState();
 const htmlAfterStarRestoration = sourceAfterStarRestoration.skills.find(
   (skill: Record<string, any>) => skill.githubPath === PATH,

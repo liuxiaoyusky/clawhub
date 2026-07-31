@@ -303,7 +303,7 @@ jobs:
           ' proof/claw-603/claim-cleanup.json >/dev/null
 
       - name: Upload CLAW-603 claim and native proof
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: claw-603-claim-native-proof-${{ github.run_id }}-${{ github.run_attempt }}
@@ -332,20 +332,20 @@ jobs:
       - uses: ./.github/actions/setup-bun
 
       - name: Enforce permanent-Test cleanup independently of the proof runner
+        if: ${{ always() }}
         run: |
-          set -euo pipefail
+          set +e
+          set +u
+          set -o pipefail
           mkdir -p proof/claw-603-cleanup
-          bunx convex run --no-push appMeta:getDeploymentInfo '{}' \
-            > proof/claw-603-cleanup/deployment.json
-          jq -e --arg sha "$DEPLOY_SHA" '.appBuildSha == $sha' \
-            proof/claw-603-cleanup/deployment.json >/dev/null
           bunx convex run --no-push skillsShMirrorVisibility:setPublicGateInternal \
             '{
               "enabled":false,
               "actor":"CLAW-603 claim proof cleanup backstop",
               "reason":"CLAW-603 claim proof independent fail-closed cleanup",
               "confirm":"deactivate-skills-sh-public-test"
-            }' > proof/claw-603-cleanup/gate-closed.json
+            }' > proof/claw-603-cleanup/gate-closed.json 2>&1
+          gate_close_exit=$?
           bunx convex run --no-push skillsShMirror:configureInternal \
             '{
               "actor":"CLAW-603 claim proof cleanup backstop",
@@ -355,18 +355,57 @@ jobs:
               "maxRowsPerRun":50000,
               "maxRowsPerBatch":50,
               "maxDetailBytes":65536
-            }' > proof/claw-603-cleanup/control-disabled.json
+            }' > proof/claw-603-cleanup/control-disabled.json 2>&1
+          control_disable_exit=$?
           token_rotation="$(bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}')"
+          token_rotation_exit=$?
           jq '{
             ok,
             admin:{handle:.admin.handle,role:.admin.role},
             user:{handle:.user.handle,role:.user.role}
           }' <<<"$token_rotation" > proof/claw-603-cleanup/token-rotated.json
+          token_redaction_exit=$?
           token_rotation=""
+          bunx convex run --no-push appMeta:getDeploymentInfo '{}' \
+            > proof/claw-603-cleanup/deployment.json
+          deployment_exit=$?
+          jq -e --arg sha "${DEPLOY_SHA:-}" '.appBuildSha == $sha' \
+            proof/claw-603-cleanup/deployment.json >/dev/null
+          sha_match_exit=$?
+          bunx convex run --no-push --inline-query '
+            const digest = await ctx.db.query("skillsShMirrorDigests")
+              .withIndex("by_external_id", q => q.eq("externalId", "patrick-erichsen/skills/html"))
+              .unique();
+            const detail = await ctx.db.query("skillsShMirrorDetails")
+              .withIndex("by_external_id", q => q.eq("externalId", "patrick-erichsen/skills/html"))
+              .unique();
+            const source = await ctx.db.query("githubSkillSources")
+              .withIndex("by_repo", q => q.eq("repo", "patrick-erichsen/skills"))
+              .unique();
+            const skills = source
+              ? await ctx.db.query("skills")
+                  .withIndex("by_github_source", q => q.eq("githubSourceId", source._id))
+                  .collect()
+              : [];
+            const candidates = [];
+            const stars = [];
+            for (const skill of skills) {
+              candidates.push(...await ctx.db.query("githubSkillCandidates")
+                .withIndex("by_skill", q => q.eq("skillId", skill._id))
+                .collect());
+              stars.push(...await ctx.db.query("stars")
+                .withIndex("by_skill", q => q.eq("skillId", skill._id))
+                .collect());
+            }
+            return {digest, detail, source, skills, candidates, stars};
+          ' > proof/claw-603-cleanup/affected-state.json
+          affected_state_exit=$?
           bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
             > proof/claw-603-cleanup/capabilities.json
+          capabilities_exit=$?
           bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
             > proof/claw-603-cleanup/isolation.json
+          isolation_exit=$?
           jq -e '
             .skillsSh.publicCatalogEnabled == false and
             .skillsSh.discoveryEnabled == false and
@@ -374,10 +413,49 @@ jobs:
             .skillsSh.scanPlanningEnabled == false and
             .skillsSh.scanAdmissionEnabled == false
           ' proof/claw-603-cleanup/capabilities.json >/dev/null
+          capabilities_assert_exit=$?
           jq -e '
             .mirror.scansPlanned == 0 and
             .mirror.scansAdmitted == 0
           ' proof/claw-603-cleanup/isolation.json >/dev/null
+          isolation_assert_exit=$?
+          jq -n \
+            --argjson deploymentExit "$deployment_exit" \
+            --argjson shaMatchExit "$sha_match_exit" \
+            --argjson gateCloseExit "$gate_close_exit" \
+            --argjson controlDisableExit "$control_disable_exit" \
+            --argjson tokenRotationExit "$token_rotation_exit" \
+            --argjson tokenRedactionExit "$token_redaction_exit" \
+            --argjson affectedStateExit "$affected_state_exit" \
+            --argjson capabilitiesExit "$capabilities_exit" \
+            --argjson isolationExit "$isolation_exit" \
+            --argjson capabilitiesAssertExit "$capabilities_assert_exit" \
+            --argjson isolationAssertExit "$isolation_assert_exit" \
+            '{
+              deploymentExit:$deploymentExit,
+              shaMatchExit:$shaMatchExit,
+              gateCloseExit:$gateCloseExit,
+              controlDisableExit:$controlDisableExit,
+              tokenRotationExit:$tokenRotationExit,
+              tokenRedactionExit:$tokenRedactionExit,
+              affectedStateExit:$affectedStateExit,
+              capabilitiesExit:$capabilitiesExit,
+              isolationExit:$isolationExit,
+              capabilitiesAssertExit:$capabilitiesAssertExit,
+              isolationAssertExit:$isolationAssertExit
+            }' > proof/claw-603-cleanup/cleanup-status.json
+          set -e
+          [[ "$deployment_exit" == "0" ]]
+          [[ "$sha_match_exit" == "0" ]]
+          [[ "$gate_close_exit" == "0" ]]
+          [[ "$control_disable_exit" == "0" ]]
+          [[ "$token_rotation_exit" == "0" ]]
+          [[ "$token_redaction_exit" == "0" ]]
+          [[ "$affected_state_exit" == "0" ]]
+          [[ "$capabilities_exit" == "0" ]]
+          [[ "$isolation_exit" == "0" ]]
+          [[ "$capabilities_assert_exit" == "0" ]]
+          [[ "$isolation_assert_exit" == "0" ]]
 
       - name: Upload CLAW-603 independent cleanup proof
         if: ${{ always() }}
