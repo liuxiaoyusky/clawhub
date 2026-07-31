@@ -4,6 +4,13 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("CLAW-603 permanent Test proof workflow", () => {
+  it("pins every Test operator job to the exact deployed main SHA", async () => {
+    const workflow = await readFile(".github/workflows/skills-sh-sync.yml", "utf8");
+
+    expect(workflow.match(/c762d8ec6d198f2f92b0d33f2af3e83cac6ce8cc/g)).toHaveLength(4);
+    expect(workflow).not.toContain("e9316c1c7d79840717d993689c47c66da7f4c87f");
+  });
+
   it("retries read-only provenance pages and proves token revocation directly", async () => {
     const workflow = await readFile(".github/workflows/skills-sh-sync.yml", "utf8");
 
