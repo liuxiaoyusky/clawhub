@@ -24,6 +24,9 @@ jobs:
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
       DEPLOY_SHA: c1f6ba2f07b5fc084a31286a54e23e7bce404780
+      EXPECTED_CATALOG_SCAN_ATTEMPTS: 9
+      EXPECTED_NATIVE_SCAN_JOBS: 16
+      EXPECTED_NATIVE_SCAN_UPDATED_AT_SUM: 28554932587800
       LEADERBOARD_RUN_ID: hs7qke4za0khb8n1dn3ptdj1w98bkzr5
       TRENDING_RUN_ID: hs7ta346x92t82y7feq8smtej98bjakj
       TEST_SITE_URL: ${{ vars.SITE_URL }}
@@ -140,6 +143,18 @@ jobs:
             .skillsSh.scanPlanningEnabled == false and
             .skillsSh.scanAdmissionEnabled == false
           ' proof/claw-603/claim-capabilities-before.json >/dev/null
+          bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
+            > proof/claw-603/claim-isolation-before.json
+          jq -e \
+            --argjson catalogAttempts "$EXPECTED_CATALOG_SCAN_ATTEMPTS" \
+            --argjson nativeJobs "$EXPECTED_NATIVE_SCAN_JOBS" \
+            --argjson nativeUpdatedAtSum "$EXPECTED_NATIVE_SCAN_UPDATED_AT_SUM" '
+            .catalogScanAttempts.isEstimate == false and
+            .catalogScanAttempts.count == $catalogAttempts and
+            .nativeScanJobs.isEstimate == false and
+            .nativeScanJobs.count == $nativeJobs and
+            .nativeScanJobs.updatedAtSum == $nativeUpdatedAtSum
+          ' proof/claw-603/claim-isolation-before.json >/dev/null
 
           token_seed="$(bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}')"
           operator_token="$(jq -r '.admin.token // empty' <<<"$token_seed")"
@@ -166,6 +181,24 @@ jobs:
             ([.runs[] | select(.status == "completed" and .sourceView == "trending")] |
               max_by(.startedAt).runId == $trendingRunId)
           ' proof/claw-603/mirror-status-before.json >/dev/null
+
+          bunx convex run --no-push skillsShMirror:configureInternal \
+            '{
+              "actor":"CLAW-603 permanent Test claim workflow",
+              "reason":"CLAW-603 claim lifecycle and native continuity proof",
+              "confirm":"enable-skills-sh-mirror-test",
+              "enabled":true,
+              "maxRowsPerRun":50000,
+              "maxRowsPerBatch":50,
+              "maxDetailBytes":65536
+            }' > proof/claw-603/claim-control-enabled.json
+          jq -e '
+            .enabled == true and
+            .paused == false and
+            .publicGateEnabled == false and
+            .scanPlanningEnabled == false and
+            .scanAdmissionEnabled == false
+          ' proof/claw-603/claim-control-enabled.json >/dev/null
 
           post_mirror \
             '{"operation":"verify-activate","reason":"CLAW-603 permanent Test claim precondition"}' \
@@ -328,6 +361,11 @@ jobs:
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
       DEPLOY_SHA: c1f6ba2f07b5fc084a31286a54e23e7bce404780
+      EXPECTED_CATALOG_SCAN_ATTEMPTS: 9
+      EXPECTED_NATIVE_SCAN_JOBS: 16
+      EXPECTED_NATIVE_SCAN_UPDATED_AT_SUM: 28554932587800
+      LEADERBOARD_RUN_ID: hs7qke4za0khb8n1dn3ptdj1w98bkzr5
+      TRENDING_RUN_ID: hs7ta346x92t82y7feq8smtej98bjakj
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -410,6 +448,9 @@ jobs:
           bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
             > proof/claw-603-cleanup/isolation.json
           isolation_exit=$?
+          bunx convex run --no-push skillsShMirror:getStatusInternal '{}' \
+            > proof/claw-603-cleanup/mirror-status.json
+          mirror_status_exit=$?
           jq -e '
             .skillsSh.publicCatalogEnabled == false and
             .skillsSh.discoveryEnabled == false and
@@ -418,11 +459,25 @@ jobs:
             .skillsSh.scanAdmissionEnabled == false
           ' proof/claw-603-cleanup/capabilities.json >/dev/null
           capabilities_assert_exit=$?
-          jq -e '
-            .mirror.scansPlanned == 0 and
-            .mirror.scansAdmitted == 0
+          jq -e \
+            --argjson catalogAttempts "$EXPECTED_CATALOG_SCAN_ATTEMPTS" \
+            --argjson nativeJobs "$EXPECTED_NATIVE_SCAN_JOBS" \
+            --argjson nativeUpdatedAtSum "$EXPECTED_NATIVE_SCAN_UPDATED_AT_SUM" '
+            .catalogScanAttempts.isEstimate == false and
+            .catalogScanAttempts.count == $catalogAttempts and
+            .nativeScanJobs.isEstimate == false and
+            .nativeScanJobs.count == $nativeJobs and
+            .nativeScanJobs.updatedAtSum == $nativeUpdatedAtSum
           ' proof/claw-603-cleanup/isolation.json >/dev/null
           isolation_assert_exit=$?
+          jq -e \
+            --arg leaderboardRunId "$LEADERBOARD_RUN_ID" \
+            --arg trendingRunId "$TRENDING_RUN_ID" '
+            [.runs[] | select(.runId == $leaderboardRunId or .runId == $trendingRunId)] as $proofRuns |
+            ($proofRuns | length) == 2 and
+            all($proofRuns[]; .counts.scansPlanned == 0 and .counts.scansAdmitted == 0)
+          ' proof/claw-603-cleanup/mirror-status.json >/dev/null
+          mirror_status_assert_exit=$?
           jq -n \
             --argjson deploymentExit "$deployment_exit" \
             --argjson shaMatchExit "$sha_match_exit" \
@@ -433,8 +488,10 @@ jobs:
             --argjson affectedStateExit "$affected_state_exit" \
             --argjson capabilitiesExit "$capabilities_exit" \
             --argjson isolationExit "$isolation_exit" \
+            --argjson mirrorStatusExit "$mirror_status_exit" \
             --argjson capabilitiesAssertExit "$capabilities_assert_exit" \
             --argjson isolationAssertExit "$isolation_assert_exit" \
+            --argjson mirrorStatusAssertExit "$mirror_status_assert_exit" \
             '{
               deploymentExit:$deploymentExit,
               shaMatchExit:$shaMatchExit,
@@ -445,8 +502,10 @@ jobs:
               affectedStateExit:$affectedStateExit,
               capabilitiesExit:$capabilitiesExit,
               isolationExit:$isolationExit,
+              mirrorStatusExit:$mirrorStatusExit,
               capabilitiesAssertExit:$capabilitiesAssertExit,
-              isolationAssertExit:$isolationAssertExit
+              isolationAssertExit:$isolationAssertExit,
+              mirrorStatusAssertExit:$mirrorStatusAssertExit
             }' > proof/claw-603-cleanup/cleanup-status.json
           set -e
           [[ "$deployment_exit" == "0" ]]
@@ -458,8 +517,10 @@ jobs:
           [[ "$affected_state_exit" == "0" ]]
           [[ "$capabilities_exit" == "0" ]]
           [[ "$isolation_exit" == "0" ]]
+          [[ "$mirror_status_exit" == "0" ]]
           [[ "$capabilities_assert_exit" == "0" ]]
           [[ "$isolation_assert_exit" == "0" ]]
+          [[ "$mirror_status_assert_exit" == "0" ]]
 
       - name: Upload CLAW-603 independent cleanup proof
         if: ${{ always() }}
