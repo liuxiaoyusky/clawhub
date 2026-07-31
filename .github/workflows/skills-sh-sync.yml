@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: "Operation to run"
+        required: true
+        default: sync
+        type: choice
+        options:
+          - sync
+          - dark-preflight
 
 concurrency:
   group: skills-sh-production-sync
@@ -15,6 +24,7 @@ permissions:
 
 jobs:
   sync:
+    if: ${{ github.event_name == 'schedule' || inputs.operation == 'sync' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -53,3 +63,70 @@ jobs:
           name: skills-sh-sync-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: skills-sh-sync-proof.json
+
+  dark-preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'dark-preflight' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: Production
+    env:
+      TARGET_SHA: a5ffae2196c2504561f78baccee7108b3ed18f5e
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.TARGET_SHA }}
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Fail closed and return only skills.sh to dark mode
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          live_main="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$live_main" != "$TARGET_SHA" ]]; then
+            echo "::error::origin/main advanced to $live_main"
+            exit 1
+          fi
+
+          current_mode="$(bunx convex env get CLAWHUB_SKILLS_SH_ROLLOUT_MODE --prod)"
+          if [[ "$current_mode" != "production" ]]; then
+            echo "::error::expected production skills.sh mode before dark preflight, got $current_mode"
+            exit 1
+          fi
+
+          bunx convex run rolloutCapabilities:getPublicCapabilities --prod \
+            > capabilities-before.json
+          jq -e '
+            .environment == "production" and
+            .skillsSh.mode == "production" and
+            .skillsSh.publicCatalogEnabled == false and
+            .skillsSh.scanPlanningEnabled == false and
+            .skillsSh.scanAdmissionEnabled == false and
+            .githubSkillSync.selfServiceEnabled == false
+          ' capabilities-before.json >/dev/null
+
+          bunx convex env set CLAWHUB_SKILLS_SH_ROLLOUT_MODE off --prod
+
+          bunx convex run rolloutCapabilities:getPublicCapabilities --prod \
+            > capabilities-after.json
+          jq -e '
+            .environment == "production" and
+            .skillsSh.mode == "off" and
+            .skillsSh.runtimeEnabled == false and
+            .skillsSh.publicCatalogEnabled == false and
+            .skillsSh.scanPlanningEnabled == false and
+            .skillsSh.scanAdmissionEnabled == false and
+            .githubSkillSync.selfServiceEnabled == false
+          ' capabilities-after.json >/dev/null
+
+      - name: Upload production dark-preflight proof
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: claw-603-production-dark-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: capabilities-*.json
