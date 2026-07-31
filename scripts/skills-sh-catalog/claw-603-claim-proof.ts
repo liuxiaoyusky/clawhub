@@ -2,6 +2,7 @@
 
 /* oxlint-disable typescript/no-explicit-any -- Test-only proof decodes live Convex JSON. */
 
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -105,11 +106,22 @@ async function queueState() {
     const requests = await ctx.db.query("skillScanRequests").take(1001);
     const jobs = await ctx.db.query("securityScanJobs").take(1001);
     return {
-      skillScanRequests: requests.length,
+      skillScanRequests: requests.map(request => ({
+        _id: request._id,
+        sourceKind: request.sourceKind,
+        status: request.status,
+        securityScanJobId: request.securityScanJobId ?? null,
+        githubSkillScanId: request.githubSkillScanId ?? null,
+        skillsShCatalogAttemptId: request.skillsShCatalogAttemptId ?? null,
+        skillId: request.skillId ?? null,
+        skillVersionId: request.skillVersionId ?? null,
+        runId: request.runId ?? null,
+        completedAt: request.completedAt ?? null,
+        updatedAt: request.updatedAt,
+      })),
       skillScanRequestsTruncated: requests.length > 1000,
-      securityScanJobs: jobs.length,
+      securityScanJobs: jobs,
       securityScanJobsTruncated: jobs.length > 1000,
-      securityScanUpdatedAtSum: jobs.reduce((sum, job) => sum + job.updatedAt, 0),
       jobStatuses: jobs.reduce((counts, job) => {
         counts[job.status] = (counts[job.status] ?? 0) + 1;
         return counts;
@@ -120,7 +132,17 @@ async function queueState() {
     state.skillScanRequestsTruncated === false && state.securityScanJobsTruncated === false,
     "scan queue proof exceeded the bounded complete read",
   );
-  return state;
+  const stableDigest = (rows: Record<string, any>[]) =>
+    createHash("sha256")
+      .update(JSON.stringify([...rows].sort((left, right) => left._id.localeCompare(right._id))))
+      .digest("hex");
+  return {
+    skillScanRequests: state.skillScanRequests.length,
+    skillScanRequestsSha256: stableDigest(state.skillScanRequests),
+    securityScanJobs: state.securityScanJobs.length,
+    securityScanJobsSha256: stableDigest(state.securityScanJobs),
+    jobStatuses: state.jobStatuses,
+  };
 }
 
 async function sourceState() {
@@ -458,9 +480,14 @@ const restoredSource = await sourceState();
 const restoredHtml = restoredSource.skills.find(
   (skill: Record<string, any>) => skill.githubPath === PATH,
 );
+assert(restorationPass.phase === "native-followup", "restoration verdict phase mismatch");
 assert(restoredHtml?.githubCurrentCommit === COMMIT_A, "native source commit was not restored");
 assert(restoredHtml?.githubCurrentContentHash === HASH_A, "native source hash was not restored");
 assert(restoredHtml?.githubScanStatus === "clean", "restored native source is not clean");
+assert(
+  restoredHtml?.githubPendingCandidateId === undefined,
+  "restored native source still has a pending candidate",
+);
 const restoredObservation = await observeCorrectedMirror(
   promotedMirror,
   COMMIT_A,
@@ -490,6 +517,7 @@ const queuesAfter = await queueState();
 
 assert(finalMirror.digest?.githubCommit === COMMIT_A, "mirror commit was not restored");
 assert(finalMirror.digest?.sourceContentHash === HASH_A, "mirror hash was not restored");
+assert(finalMirror.digest?.claimStatus === "promoted", "final mirror claim is not settled");
 assert(finalAlias.kind === "redirect", "final compatibility redirect is missing");
 assert(
   finalInstall.body?.github?.commit === COMMIT_A,
@@ -508,9 +536,7 @@ assert(
   "catalog or native scan isolation changed during claim proof",
 );
 assert(
-  queuesAfter.skillScanRequests === queuesBefore.skillScanRequests &&
-    queuesAfter.securityScanJobs === queuesBefore.securityScanJobs &&
-    queuesAfter.securityScanUpdatedAtSum === queuesBefore.securityScanUpdatedAtSum,
+  JSON.stringify(queuesAfter) === JSON.stringify(queuesBefore),
   "paid or automatic scan queues changed during claim proof",
 );
 
