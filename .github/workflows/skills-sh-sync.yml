@@ -1077,10 +1077,10 @@ jobs:
           finalizing=1
           cleanup
           finalizing=0
-          [[ "$proof_complete" == "1" ]]
-          trap - EXIT
           jq -e '.disableExit == 0 and .tokenRotationExit == 0 and .revokedStatus == "401"' \
             proof/claw-603/cleanup.json >/dev/null
+          proof_complete=1
+          trap - EXIT
 
       - name: Upload CLAW-603 fresh-recovery proof
         if: ${{ !cancelled() }}

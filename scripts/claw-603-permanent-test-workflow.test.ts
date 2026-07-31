@@ -13,4 +13,14 @@ describe("CLAW-603 permanent Test proof workflow", () => {
     expect(workflow).toContain('--data \'{"operation":"mirror-status"}\'');
     expect(workflow).not.toContain('--data \'{"operation":"status"}\'');
   });
+
+  it("completes from the durable cleanup artifact instead of transient shell state", async () => {
+    const workflow = await readFile(".github/workflows/skills-sh-sync.yml", "utf8");
+
+    expect(workflow).toContain(
+      "jq -e '.disableExit == 0 and .tokenRotationExit == 0 and .revokedStatus == \"401\"'",
+    );
+    expect(workflow).toContain("proof_complete=1\n          trap - EXIT");
+    expect(workflow).not.toContain('[[ "$proof_complete" == "1" ]]');
+  });
 });
