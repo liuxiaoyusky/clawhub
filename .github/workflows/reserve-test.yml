@@ -166,6 +166,18 @@ jobs:
             ([.runs[] | select(.status == "running" or .status == "paused" or .status == "reconciling")] | length == 0)
           ' proof/claw-603/status-dark.json >/dev/null
 
+          # Permanent Test has crons disabled, so refresh its existing completed hourly-stat
+          # generation explicitly before asking the native-only preflight to seal a pool.
+          bunx convex run --no-push skillStatEvents:processSkillStatEventsAction '{}' \
+            > proof/claw-603/hourly-aggregation.json
+          bunx convex run --no-push skillHourlyStats:getStateInternal '{}' \
+            > proof/claw-603/hourly-state.json
+          jq -e '
+            .backfillCompletedAt != null and
+            .lastAggregationCompletedAt != null and
+            (.lastAggregationCompletedAt / 1000) > (now - 7200)
+          ' proof/claw-603/hourly-state.json >/dev/null
+
           export CLAWHUB_SKILLS_SH_SYNC_TOKEN="$operator_token"
           export CLAWHUB_SKILLS_SH_SYNC_URL="$mirror_url?x-vercel-protection-bypass=$VERCEL_AUTOMATION_BYPASS_SECRET"
           export CLAWHUB_SKILLS_SH_SYNC_REASON="CLAW-603 final permanent Test proof $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT"
