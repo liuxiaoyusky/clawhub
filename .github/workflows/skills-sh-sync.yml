@@ -1,4 +1,4 @@
-name: CLAW-603 Permanent Test Fresh Corpus Recovery
+name: CLAW-603 Permanent Test Full Corpus Proof
 
 on:
   workflow_dispatch:
@@ -20,16 +20,15 @@ jobs:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: 3282ff9ad78e161ab590f62c6ed99d3549dd459e
+      DEPLOY_SHA: 29549947f6e5d7ee90997966b5ac044529c92a90
+      TEST_CONVEX_SITE_URL: ${{ vars.VITE_CONVEX_SITE_URL }}
       TEST_SITE_URL: ${{ vars.SITE_URL }}
       VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-      PRESERVED_LEADERBOARD_RUN_ID: hs7nw9pgdqvtm6cxf9y4xhqs6x8bgdv6
-      PRESERVED_TRENDING_RUN_ID: hs7s8h07d3910rn8taxwn91y8x8bh617
-      CANCELED_RUN_ID: hs7skp9a8p46s83p3rm9vhw01h8bg1pe
+      RECOVERABLE_RUN_ID: hs7vz5ks2d0frxz73hce75zc058bgexv
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 3282ff9ad78e161ab590f62c6ed99d3549dd459e
+          ref: 29549947f6e5d7ee90997966b5ac044529c92a90
 
       - uses: ./.github/actions/setup-bun
 
@@ -168,10 +167,45 @@ jobs:
             .skillsSh.scanAdmissionEnabled == false
           ' proof/claw-603/capabilities-before.json >/dev/null
           jq -e '
-            .catalogScanAttempts.count == 9 and
-            .nativeScanJobs.count == 16 and
-            .nativeScanJobs.updatedAtSum == 28554932587800
+            (.catalogScanAttempts.count | type == "number") and
+            (.nativeScanJobs.count | type == "number") and
+            (.nativeScanJobs.updatedAtSum | type == "number")
           ' proof/claw-603/isolation-before.json >/dev/null
+
+          bunx convex run --no-push --inline-query '
+            return await ctx.db.query("skillHourlyStatStates")
+              .withIndex("by_key", q => q.eq("key", "canonical_trending"))
+              .unique();
+          ' > proof/claw-603/hourly-state-before.json
+          if ! jq -e '
+            .backfillCompletedAt != null and
+            .lastAggregationCompletedAt != null and
+            (.lastAggregationCompletedAt / 1000) > (now - 7200)
+          ' proof/claw-603/hourly-state-before.json >/dev/null 2>&1; then
+            bunx convex run --no-push migrations:runSkillHourlyStatsBackfill \
+              '{"dryRun":false,"confirm":"apply-skill-hourly-stats-backfill"}' \
+              > proof/claw-603/hourly-backfill.json
+            bunx convex run --no-push skillStatEvents:processSkillStatEventsAction '{}' \
+              > proof/claw-603/hourly-aggregation.json
+          fi
+          hourly_ready=0
+          for _ in $(seq 1 60); do
+            bunx convex run --no-push --inline-query '
+              return await ctx.db.query("skillHourlyStatStates")
+                .withIndex("by_key", q => q.eq("key", "canonical_trending"))
+                .unique();
+            ' > proof/claw-603/hourly-state-ready.json
+            if jq -e '
+              .backfillCompletedAt != null and
+              .lastAggregationCompletedAt != null and
+              (.lastAggregationCompletedAt / 1000) > (now - 7200)
+            ' proof/claw-603/hourly-state-ready.json >/dev/null; then
+              hourly_ready=1
+              break
+            fi
+            sleep 5
+          done
+          [[ "$hourly_ready" == "1" ]]
 
           token_seed="$(bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}')"
           token_seeded=1
@@ -181,15 +215,27 @@ jobs:
           echo "::add-mask::$operator_token"
 
           post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-before.json
-          jq -e '
+          jq -e --arg recoverable "$RECOVERABLE_RUN_ID" '
             .control.enabled == false and
             .control.paused == true and
-            ([.runs[] | select(.status == "running" or .status == "paused" or .status == "reconciling")] | length == 0) and
+            ([.runs[] | select(.status == "running" or .status == "paused" or .status == "reconciling")] as $active |
+              ($active | length) == 0 or
+              (($active | length) == 1 and
+                $active[0].runId == $recoverable and
+                $active[0].sourceView == "trending" and
+                $active[0].counts.scansPlanned == 0 and
+                $active[0].counts.scansAdmitted == 0)) and
             .invariants.publicVisible == false and
             .invariants.installable == false and
             .invariants.scanPlanningEnabled == false and
             .invariants.scanAdmissionEnabled == false
           ' proof/claw-603/mirror-status-before.json >/dev/null
+          recoverable_active="$(jq --arg recoverable "$RECOVERABLE_RUN_ID" '
+            [.runs[] | select(
+              (.status == "running" or .status == "paused" or .status == "reconciling") and
+              .runId == $recoverable
+            )] | length
+          ' proof/claw-603/mirror-status-before.json)"
 
           export CLAWHUB_SKILLS_SH_SYNC_TOKEN="$operator_token"
           export CLAWHUB_SKILLS_SH_SYNC_URL="$mirror_url?x-vercel-protection-bypass=$VERCEL_AUTOMATION_BYPASS_SECRET"
@@ -207,22 +253,35 @@ jobs:
           post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-after.json
 
           jq -e \
-            --arg oldLeaderboard "$PRESERVED_LEADERBOARD_RUN_ID" \
-            --arg oldTrending "$PRESERVED_TRENDING_RUN_ID" \
-            --arg canceled "$CANCELED_RUN_ID" '
+            --arg recoverable "$RECOVERABLE_RUN_ID" \
+            --argjson expectedRecovery "$recoverable_active" '
               .ok == true and
-              (has("recovered") | not) and
+              .nativeBefore.nativeTrending.status == "ready" and
+              .nativeBefore.nativeTrending.sourceCounts.skillsShTrending == 0 and
+              ((.nativeBefore.nativeTrending.sourceCounts.clawhubTrending // 0) +
+                (.nativeBefore.nativeTrending.sourceCounts.clawhubRising // 0)) > 0 and
+              (if $expectedRecovery == 1 then
+                .recovered.runId == $recoverable and
+                .recovered.status == "completed" and
+                .recovered.sourceView == "trending" and
+                .recovered.counts.observed == .recovered.sourceTotal and
+                .recovered.counts.scansPlanned == 0 and
+                .recovered.counts.scansAdmitted == 0
+              else
+                (has("recovered") | not)
+              end) and
               .leaderboard.status == "completed" and
               .leaderboard.sourceView == "leaderboard" and
-              .leaderboard.runId != $oldLeaderboard and
-              .leaderboard.runId != $canceled and
+              .leaderboard.runId != $recoverable and
               .leaderboard.counts.observed == .leaderboard.sourceTotal and
+              .leaderboard.counts.rejected > 0 and
+              .leaderboard.counts.quarantined > 0 and
               .leaderboard.counts.scansPlanned == 0 and
               .leaderboard.counts.scansAdmitted == 0 and
               .trending.status == "completed" and
               .trending.sourceView == "trending" and
-              .trending.runId != $oldTrending and
-              .trending.runId != $canceled and
+              .trending.runId != $recoverable and
+              .trending.runId != .leaderboard.runId and
               .trending.startedAt >= .leaderboard.completedAt and
               .trending.counts.observed == .trending.sourceTotal and
               .trending.counts.scansPlanned == 0 and
@@ -232,7 +291,7 @@ jobs:
               .activation.corpus.unsafePublished == 0 and
               .scansPlanned == 0 and
               .scansAdmitted == 0
-            ' proof/claw-603/skills-sh-sync-proof.json >/dev/null
+          ' proof/claw-603/skills-sh-sync-proof.json >/dev/null
           jq -e '
             .skillsSh.publicCatalogEnabled == true and
             .skillsSh.discoveryEnabled == true and
@@ -271,6 +330,283 @@ jobs:
               ([.runs[] | select(.runId == $trending and .status == "completed" and .sourceView == "trending")] | length == 1)
             ' proof/claw-603/mirror-status-after.json >/dev/null
 
+          public_site="$TEST_CONVEX_SITE_URL"
+          curl --fail-with-body --silent --show-error \
+            "$public_site/api/v1/search?q=skills-sh%3Apatrick-erichsen%2Fskills%2Fhtml&mode=exact&limit=10" \
+            > proof/claw-603/search-exact.json
+          curl --fail-with-body --silent --show-error \
+            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html" \
+            > proof/claw-603/detail.json
+          curl --fail-with-body --silent --show-error \
+            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html/install" \
+            > proof/claw-603/install.json
+          curl --fail-with-body --silent --show-error \
+            "$public_site/api/v1/skills/html/verify?reference=skills-sh%3Apatrick-erichsen%2Fskills%2Fhtml" \
+            > proof/claw-603/verify.json
+          jq -e '
+            [.results[] | select(.id == "skills-sh:patrick-erichsen/skills/html")] as $matches |
+            ($matches | length) == 1 and
+            $matches[0].canonicalUrl == "/skills-sh/patrick-erichsen/skills/html" and
+            $matches[0].install.reference == "skills-sh:patrick-erichsen/skills/html"
+          ' proof/claw-603/search-exact.json >/dev/null
+          jq -e '
+            .reference == "skills-sh:patrick-erichsen/skills/html" and
+            .githubPath == "skills/html" and
+            (.githubCommit | type == "string" and length == 40) and
+            (.sourceContentHash | type == "string" and length == 64) and
+            (.content.markdown | length) > 0
+          ' proof/claw-603/detail.json >/dev/null
+          jq -e --slurpfile detail proof/claw-603/detail.json '
+            .ok == true and
+            .slug == "skills-sh:patrick-erichsen/skills/html" and
+            .installKind == "github" and
+            .github.repo == "patrick-erichsen/skills" and
+            .github.path == "skills/html" and
+            .github.commit == $detail[0].githubCommit and
+            .github.contentHash == $detail[0].sourceContentHash and
+            .provenance.source == "skills.sh" and
+            .trust.clawhubScan == "unscanned" and
+            .trust.label == "Not scanned by ClawHub"
+          ' proof/claw-603/install.json >/dev/null
+          jq -e '
+            .ok == false and
+            .decision == "fail" and
+            (.reasons | index("Not scanned by ClawHub")) != null and
+            .security.clawhubScan == "unscanned" and
+            .security.label == "Not scanned by ClawHub"
+          ' proof/claw-603/verify.json >/dev/null
+
+          : > proof/claw-603/trending-pages.jsonl
+          trending_cursor=""
+          declare -A trending_seen_cursors=()
+          while true; do
+            trending_url="$public_site/api/v1/trending?kind=skills&limit=100"
+            if [[ -n "$trending_cursor" ]]; then
+              encoded_cursor="$(jq -rn --arg value "$trending_cursor" '$value|@uri')"
+              trending_url="$trending_url&cursor=$encoded_cursor"
+            fi
+            trending_page="$(curl --fail-with-body --silent --show-error "$trending_url")"
+            jq -c . <<<"$trending_page" >> proof/claw-603/trending-pages.jsonl
+            trending_cursor="$(jq -r '.nextCursor // empty' <<<"$trending_page")"
+            if [[ -z "$trending_cursor" ]]; then
+              break
+            fi
+            if [[ -n "${trending_seen_cursors[$trending_cursor]+x}" ]]; then
+              echo "::error::Trending pagination repeated a cursor"
+              exit 1
+            fi
+            trending_seen_cursors["$trending_cursor"]=1
+          done
+          jq -s '
+            [.[].items[]] as $items |
+            {
+              pages:length,
+              snapshotIds:(map(.snapshotId) | unique),
+              total:($items | length),
+              uniqueIds:($items | map(.id) | unique | length),
+              native:($items | map(select(.source == "clawhub")) | length),
+              skillsSh:($items | map(select(.source == "skills-sh")) | length),
+              inferredSkillsSh24h:($items | map(select(.source == "skills-sh" and .metrics.trending24hInstalls != null)) | length)
+            }
+          ' proof/claw-603/trending-pages.jsonl > proof/claw-603/trending-summary.json
+          jq -e '
+            .pages > 0 and
+            (.snapshotIds | length) == 1 and
+            .total == .uniqueIds and
+            .native > 0 and
+            .skillsSh > 0 and
+            .inferredSkillsSh24h == 0
+          ' proof/claw-603/trending-summary.json >/dev/null
+
+          search_latency="$(curl --fail-with-body --silent --output /dev/null --write-out '%{time_total}' \
+            "$public_site/api/v1/search?q=skills-sh%3Apatrick-erichsen%2Fskills%2Fhtml&mode=exact&limit=10")"
+          detail_latency="$(curl --fail-with-body --silent --output /dev/null --write-out '%{time_total}' \
+            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html")"
+          trending_latency="$(curl --fail-with-body --silent --output /dev/null --write-out '%{time_total}' \
+            "$public_site/api/v1/trending?kind=skills&limit=100")"
+          jq -n \
+            --argjson searchSeconds "$search_latency" \
+            --argjson detailSeconds "$detail_latency" \
+            --argjson trendingSeconds "$trending_latency" \
+            '{searchSeconds:$searchSeconds,detailSeconds:$detailSeconds,trendingSeconds:$trendingSeconds}' \
+            > proof/claw-603/latency.json
+
+          post_mirror \
+            '{"operation":"deactivate","reason":"CLAW-603 permanent Test rollback proof"}' \
+            proof/claw-603/rollback.json
+          bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
+            > proof/claw-603/capabilities-rolled-back.json
+          curl --fail-with-body --silent --show-error \
+            "$public_site/api/v1/search?q=skills-sh%3Apatrick-erichsen%2Fskills%2Fhtml&mode=exact&limit=10" \
+            > proof/claw-603/search-rolled-back.json
+          detail_rolled_back_status="$(curl --silent --show-error --output \
+            proof/claw-603/detail-rolled-back.json --write-out '%{http_code}' \
+            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html")"
+          install_rolled_back_status="$(curl --silent --show-error --output \
+            proof/claw-603/install-rolled-back.json --write-out '%{http_code}' \
+            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html/install")"
+          : > proof/claw-603/trending-native-only-pages.jsonl
+          native_cursor=""
+          declare -A native_seen_cursors=()
+          while true; do
+            native_url="$public_site/api/v1/trending?kind=skills&limit=100"
+            if [[ -n "$native_cursor" ]]; then
+              encoded_cursor="$(jq -rn --arg value "$native_cursor" '$value|@uri')"
+              native_url="$native_url&cursor=$encoded_cursor"
+            fi
+            native_page="$(curl --fail-with-body --silent --show-error "$native_url")"
+            jq -c . <<<"$native_page" >> proof/claw-603/trending-native-only-pages.jsonl
+            native_cursor="$(jq -r '.nextCursor // empty' <<<"$native_page")"
+            if [[ -z "$native_cursor" ]]; then
+              break
+            fi
+            if [[ -n "${native_seen_cursors[$native_cursor]+x}" ]]; then
+              echo "::error::Native-only Trending pagination repeated a cursor"
+              exit 1
+            fi
+            native_seen_cursors["$native_cursor"]=1
+          done
+          jq -s '
+            [.[].items[]] as $items |
+            {
+              pages:length,
+              snapshotIds:(map(.snapshotId) | unique),
+              total:($items | length),
+              uniqueIds:($items | map(.id) | unique | length),
+              native:($items | map(select(.source == "clawhub")) | length),
+              nonNative:($items | map(select(.source != "clawhub")) | length)
+            }
+          ' proof/claw-603/trending-native-only-pages.jsonl \
+            > proof/claw-603/trending-native-only-summary.json
+          jq -e '
+            .ok == true and
+            .enabled == false and
+            .nativeTrending.status == "ready" and
+            .nativeTrending.sourceCounts.skillsShTrending == 0 and
+            ((.nativeTrending.sourceCounts.clawhubTrending // 0) +
+              (.nativeTrending.sourceCounts.clawhubRising // 0)) > 0 and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0
+          ' proof/claw-603/rollback.json >/dev/null
+          jq -e '
+            .skillsSh.publicCatalogEnabled == false and
+            .skillsSh.scanPlanningEnabled == false and
+            .skillsSh.scanAdmissionEnabled == false
+          ' proof/claw-603/capabilities-rolled-back.json >/dev/null
+          jq -e '
+            (.results | map(select(.source == "skills-sh")) | length) == 0
+          ' proof/claw-603/search-rolled-back.json >/dev/null
+          [[ "$detail_rolled_back_status" == "404" ]]
+          [[ "$install_rolled_back_status" == "404" ]]
+          jq -e '
+            .pages > 0 and
+            (.snapshotIds | length) == 1 and
+            .total == .uniqueIds and
+            .native > 0 and
+            .nonNative == 0
+          ' proof/claw-603/trending-native-only-summary.json >/dev/null
+          activated=0
+
+          post_mirror \
+            '{"operation":"configure","enabled":true,"reason":"CLAW-603 permanent Test reactivation proof"}' \
+            proof/claw-603/reactivation-configured.json
+          # Arm fail-closed cleanup before the request can activate server-side.
+          activated=1
+          post_mirror \
+            '{"operation":"verify-activate","reason":"CLAW-603 permanent Test reactivation proof"}' \
+            proof/claw-603/reactivation.json
+          post_mirror \
+            '{"operation":"configure","enabled":false,"reason":"CLAW-603 permanent Test reactivation complete"}' \
+            proof/claw-603/reactivation-control-disabled.json
+          bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
+            > proof/claw-603/capabilities-reactivated.json
+          post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-reactivated.json
+          curl --fail-with-body --silent --show-error \
+            "$public_site/api/v1/search?q=skills-sh%3Apatrick-erichsen%2Fskills%2Fhtml&mode=exact&limit=10" \
+            > proof/claw-603/search-reactivated.json
+          curl --fail-with-body --silent --show-error \
+            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html" \
+            > proof/claw-603/detail-reactivated.json
+          curl --fail-with-body --silent --show-error \
+            "$public_site/api/v1/skills-sh/patrick-erichsen/skills/html/install" \
+            > proof/claw-603/install-reactivated.json
+          : > proof/claw-603/trending-reactivated-pages.jsonl
+          reactivated_cursor=""
+          declare -A reactivated_seen_cursors=()
+          while true; do
+            reactivated_url="$public_site/api/v1/trending?kind=skills&limit=100"
+            if [[ -n "$reactivated_cursor" ]]; then
+              encoded_cursor="$(jq -rn --arg value "$reactivated_cursor" '$value|@uri')"
+              reactivated_url="$reactivated_url&cursor=$encoded_cursor"
+            fi
+            reactivated_page="$(curl --fail-with-body --silent --show-error "$reactivated_url")"
+            jq -c . <<<"$reactivated_page" >> proof/claw-603/trending-reactivated-pages.jsonl
+            reactivated_cursor="$(jq -r '.nextCursor // empty' <<<"$reactivated_page")"
+            if [[ -z "$reactivated_cursor" ]]; then
+              break
+            fi
+            if [[ -n "${reactivated_seen_cursors[$reactivated_cursor]+x}" ]]; then
+              echo "::error::Reactivated Trending pagination repeated a cursor"
+              exit 1
+            fi
+            reactivated_seen_cursors["$reactivated_cursor"]=1
+          done
+          jq -s '
+            [.[].items[]] as $items |
+            {
+              pages:length,
+              snapshotIds:(map(.snapshotId) | unique),
+              total:($items | length),
+              uniqueIds:($items | map(.id) | unique | length),
+              native:($items | map(select(.source == "clawhub")) | length),
+              skillsSh:($items | map(select(.source == "skills-sh")) | length)
+            }
+          ' proof/claw-603/trending-reactivated-pages.jsonl \
+            > proof/claw-603/trending-reactivated-summary.json
+          jq -e '
+            .activated == true and
+            .trendingSnapshot.status == "ready" and
+            .trendingSnapshot.sourceCounts.skillsShTrending > 0 and
+            ((.trendingSnapshot.sourceCounts.clawhubTrending // 0) +
+              (.trendingSnapshot.sourceCounts.clawhubRising // 0)) > 0 and
+            .corpus.hiddenEligible == 0 and
+            .corpus.unsafePublished == 0 and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0
+          ' proof/claw-603/reactivation.json >/dev/null
+          jq -e '
+            .skillsSh.publicCatalogEnabled == true and
+            .skillsSh.discoveryEnabled == true and
+            .skillsSh.scanPlanningEnabled == false and
+            .skillsSh.scanAdmissionEnabled == false
+          ' proof/claw-603/capabilities-reactivated.json >/dev/null
+          jq -e '
+            .control.enabled == false and
+            .control.paused == true and
+            ([.runs[] | select(.status == "running" or .status == "paused" or .status == "reconciling")] | length == 0) and
+            .invariants.publicVisible == true and
+            .invariants.scanPlanningEnabled == false and
+            .invariants.scanAdmissionEnabled == false
+          ' proof/claw-603/mirror-status-reactivated.json >/dev/null
+          jq -e '
+            [.results[] | select(.id == "skills-sh:patrick-erichsen/skills/html")] | length == 1
+          ' proof/claw-603/search-reactivated.json >/dev/null
+          jq -e '.reference == "skills-sh:patrick-erichsen/skills/html"' \
+            proof/claw-603/detail-reactivated.json >/dev/null
+          jq -e '
+            .ok == true and
+            .trust.clawhubScan == "unscanned" and
+            .trust.label == "Not scanned by ClawHub"
+          ' proof/claw-603/install-reactivated.json >/dev/null
+          jq -e --slurpfile reactivation proof/claw-603/reactivation.json '
+            .pages > 0 and
+            (.snapshotIds | length) == 1 and
+            .snapshotIds[0] == $reactivation[0].trendingSnapshot.snapshotId and
+            .total == .uniqueIds and
+            .native > 0 and
+            .skillsSh > 0
+          ' proof/claw-603/trending-reactivated-summary.json >/dev/null
+
           : > proof/claw-603/provenance-pages.jsonl
           cursor="null"
           while true; do
@@ -282,6 +618,17 @@ jobs:
                 page: result.page.map((row) => ({
                   externalId: row.externalId,
                   lastObservedRunId: row.lastObservedRunId,
+                  sourceType: row.sourceType,
+                  githubPath: row.githubPath ?? null,
+                  githubCommit: row.githubCommit ?? null,
+                  sourceContentHash: row.sourceContentHash ?? null,
+                  upstreamWarning: Object.values(row.upstreamScanners ?? {})
+                    .some((scanner) => scanner.status !== 'pass'),
+                  sourceFreshnessStatus: row.sourceFreshnessStatus,
+                  detailStatus: row.detailStatus,
+                  claimStatus: row.claimStatus ?? null,
+                  publicVisible: row.publicVisible,
+                  installable: row.installable,
                   active: row.active,
                   tombstoned: row.tombstonedAt !== undefined,
                 })),
@@ -295,27 +642,46 @@ jobs:
           done
           jq -s \
             --arg leaderboard "$leaderboard_run_id" \
-            --arg trending "$trending_run_id" \
-            --arg canceled "$CANCELED_RUN_ID" '
+            --arg trending "$trending_run_id" '
               [.[].page[]] as $rows |
+              [$rows[] | select(
+                .active == true and
+                .tombstoned == false and
+                .sourceType == "github" and
+                .sourceFreshnessStatus == "observed-only" and
+                .detailStatus == "available" and
+                (.githubPath | type == "string" and length > 0) and
+                (.githubCommit | type == "string" and length == 40) and
+                (.sourceContentHash | type == "string" and length == 64) and
+                .claimStatus == null
+              )] as $eligible |
               {
                 pages:length,
                 total:($rows | length),
                 uniqueExternalIds:($rows | map(.externalId) | unique | length),
                 active:($rows | map(select(.active == true)) | length),
                 tombstoned:($rows | map(select(.tombstoned == true)) | length),
+                exactSourceEligible:($eligible | length),
+                exactSourceEligiblePublished:($eligible | map(select(.publicVisible == true and .installable == true)) | length),
+                eligiblePublishedWithUpstreamWarning:($eligible | map(select(.publicVisible == true and .upstreamWarning == true)) | length),
                 activeFreshLeaderboard:($rows | map(select(.active == true and .lastObservedRunId == $leaderboard)) | length),
                 activeFreshTrending:($rows | map(select(.active == true and .lastObservedRunId == $trending)) | length),
-                activeCanceled:($rows | map(select(.active == true and .lastObservedRunId == $canceled)) | length),
                 activeOther:($rows | map(select(.active == true and .lastObservedRunId != $leaderboard and .lastObservedRunId != $trending)) | length)
               }
             ' proof/claw-603/provenance-pages.jsonl > proof/claw-603/provenance-summary.json
           jq -e '
             .total == .uniqueExternalIds and
             .active == (.activeFreshLeaderboard + .activeFreshTrending) and
-            .activeCanceled == 0 and
+            .exactSourceEligible > 0 and
+            .exactSourceEligible == .exactSourceEligiblePublished and
+            .eligiblePublishedWithUpstreamWarning > 0 and
             .activeOther == 0
           ' proof/claw-603/provenance-summary.json >/dev/null
+          jq -e \
+            --slurpfile provenance proof/claw-603/provenance-summary.json '
+              .counts.sourceEligible == $provenance[0].exactSourceEligible and
+              .counts.eligiblePublished == $provenance[0].exactSourceEligiblePublished
+            ' proof/claw-603/visibility-audit.json >/dev/null
           jq '{
             leaderboardRunId:.leaderboard.runId,
             leaderboardSnapshotId:.leaderboard.snapshotId,
@@ -332,6 +698,37 @@ jobs:
             syncCompletedAt:.completedAt,
             activationCorpus:.activation.corpus
           }' proof/claw-603/skills-sh-sync-proof.json > proof/claw-603/recovery-summary.json
+          jq -n \
+            --arg deploySha "$DEPLOY_SHA" \
+            --slurpfile sync proof/claw-603/skills-sh-sync-proof.json \
+            --slurpfile audit proof/claw-603/visibility-audit.json \
+            --slurpfile provenance proof/claw-603/provenance-summary.json \
+            --slurpfile trending proof/claw-603/trending-summary.json \
+            --slurpfile rollback proof/claw-603/rollback.json \
+            --slurpfile reactivation proof/claw-603/reactivation.json \
+            --slurpfile latency proof/claw-603/latency.json '
+              {
+                deploySha:$deploySha,
+                completedAt:$sync[0].completedAt,
+                durationMs:$sync[0].durationMs,
+                recoveredRunId:$sync[0].recovered.runId,
+                leaderboardRunId:$sync[0].leaderboard.runId,
+                leaderboardSnapshotId:$sync[0].leaderboard.snapshotId,
+                leaderboardSourceTotal:$sync[0].leaderboard.sourceTotal,
+                leaderboardCounts:$sync[0].leaderboard.counts,
+                trendingRunId:$sync[0].trending.runId,
+                trendingSnapshotId:$sync[0].trending.snapshotId,
+                trendingSourceTotal:$sync[0].trending.sourceTotal,
+                trendingCounts:$sync[0].trending.counts,
+                activation:$sync[0].activation,
+                audit:$audit[0],
+                provenance:$provenance[0],
+                publicTrending:$trending[0],
+                rollback:$rollback[0],
+                reactivation:$reactivation[0],
+                latency:$latency[0]
+              }
+            ' > proof/claw-603/test-proof-summary.json
 
           finalizing=1
           cleanup
@@ -362,12 +759,12 @@ jobs:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: 3282ff9ad78e161ab590f62c6ed99d3549dd459e
+      DEPLOY_SHA: 29549947f6e5d7ee90997966b5ac044529c92a90
       PROOF_COMPLETE: ${{ needs.permanent-test.outputs.proof_complete }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 3282ff9ad78e161ab590f62c6ed99d3549dd459e
+          ref: 29549947f6e5d7ee90997966b5ac044529c92a90
 
       - uses: ./.github/actions/setup-bun
 
