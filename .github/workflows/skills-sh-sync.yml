@@ -21,7 +21,7 @@ jobs:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: 110f92a0ef1c88889b09f80801421998a114988b
+      DEPLOY_SHA: 536674f49ba53cd8bc62b95faf62bffbd7f19cfb
       GH_TOKEN: ${{ github.token }}
       TEST_CONVEX_SITE_URL: ${{ vars.VITE_CONVEX_SITE_URL }}
       TEST_SITE_URL: ${{ vars.SITE_URL }}
@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 110f92a0ef1c88889b09f80801421998a114988b
+          ref: 536674f49ba53cd8bc62b95faf62bffbd7f19cfb
 
       - uses: ./.github/actions/setup-bun
 
@@ -606,7 +606,7 @@ jobs:
           encoded_slug="$(jq -rn --arg value "$external_slug" '$value|@uri')"
           external_route="/skills-sh/$encoded_owner/$encoded_repo/$encoded_slug"
           curl --fail-with-body --silent --show-error \
-            "$public_site/api/v1/search?q=$encoded_ref&mode=exact&limit=10" \
+            "$public_site/api/v1/search?q=$encoded_slug&mode=exact&limit=10" \
             > proof/claw-603/search-exact.json
           curl --fail-with-body --silent --show-error \
             "$public_site/api/v1/skills-sh/$encoded_owner/$encoded_repo/$encoded_slug" \
@@ -1090,12 +1090,12 @@ jobs:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: 110f92a0ef1c88889b09f80801421998a114988b
+      DEPLOY_SHA: 536674f49ba53cd8bc62b95faf62bffbd7f19cfb
       PROOF_COMPLETE: ${{ needs.permanent-test.outputs.proof_complete }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 110f92a0ef1c88889b09f80801421998a114988b
+          ref: 536674f49ba53cd8bc62b95faf62bffbd7f19cfb
 
       - uses: ./.github/actions/setup-bun
 
