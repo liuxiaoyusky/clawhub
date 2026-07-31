@@ -356,6 +356,23 @@ jobs:
           post_mirror \
             '{"operation":"configure","enabled":true,"reason":"CLAW-603 exact-SHA Test Trending refresh"}' \
             proof/claw-603/configured.json
+
+          # Permanent Test does not run the production cron. Refresh the same
+          # canonical event aggregation before asking for a native-only snapshot;
+          # this is a no-op on the corpus when no new events exist, but advances
+          # the durable readiness timestamp honestly.
+          bunx convex run --no-push skillHourlyStats:getStateInternal '{}' \
+            > proof/claw-603/hourly-stats-before.json
+          bunx convex run --no-push skillStatEvents:processSkillStatEventsAction '{}' \
+            > proof/claw-603/hourly-stats-refresh.json
+          bunx convex run --no-push skillHourlyStats:getStateInternal '{}' \
+            > proof/claw-603/hourly-stats-after.json
+          aggregation_fresh_after="$(( $(date +%s%3N) - 10 * 60 * 1000 ))"
+          jq -e --argjson freshAfter "$aggregation_fresh_after" '
+            (.backfillCompletedAt | type == "number") and
+            (.lastAggregationCompletedAt | type == "number") and
+            .lastAggregationCompletedAt >= $freshAfter
+          ' proof/claw-603/hourly-stats-after.json >/dev/null
           post_mirror \
             '{"operation":"prepare-native-trending","reason":"CLAW-603 native-only continuity before Test refresh"}' \
             proof/claw-603/native-before.json
@@ -587,6 +604,7 @@ jobs:
 
       - name: Deactivate incomplete Test proof and clean controls
         run: |
+          set +e
           set -uo pipefail
           cleanup_failed=0
           deployed_sha="unknown"
@@ -643,8 +661,7 @@ jobs:
               }'
             deactivation_exit=$?
             if [[ "$deactivation_exit" != "0" ]]; then
-              cleanup_failed=1
-              echo "::error::Permanent Test fail-closed deactivation failed"
+              echo "::warning::Native Trending rematerialization failed after fail-closed deactivation; final gate readback decides cleanup safety"
             fi
           fi
 
