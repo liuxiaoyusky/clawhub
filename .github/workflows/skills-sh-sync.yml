@@ -691,7 +691,7 @@ jobs:
                 $items | map(.rank) == [range(1; ($items | length) + 1)]
               ),
               firstPagePublisherMax:(
-                .[0].items |
+                .[0].items[:20] |
                 map(.sourceIdentity.owner // .publisher.handle // .id) |
                 group_by(.) |
                 map(length) |
