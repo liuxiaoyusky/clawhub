@@ -37,19 +37,27 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
-      - name: Synchronize and automatically verify the production corpus
-        env:
-          CLAWHUB_SKILLS_SH_SYNC_OUTPUT: skills-sh-sync-proof.json
-          CLAWHUB_SKILLS_SH_SYNC_REASON: skills.sh production sync ${{ github.run_id }} attempt ${{ github.run_attempt }}
-          CLAWHUB_SKILLS_SH_SYNC_URL: https://clawhub.ai/ops/skills-sh/mirror
+      - name: Print non-secret GitHub OIDC identity claims
         run: |
           set -euo pipefail
-          bun scripts/skills-sh-catalog/sync.ts
-
-      - name: Upload skills.sh synchronization proof
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: skills-sh-sync-${{ github.run_id }}-${{ github.run_attempt }}
-          if-no-files-found: error
-          path: skills-sh-sync-proof.json
+          token="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=clawhub" \
+            | jq -er '.value')"
+          echo "::add-mask::$token"
+          TOKEN="$token" bun -e '
+            const payload = JSON.parse(
+              Buffer.from(process.env.TOKEN.split(".")[1], "base64url").toString("utf8"),
+            );
+            const names = [
+              "iss", "aud", "repository", "repository_id", "repository_owner",
+              "repository_owner_id", "workflow_ref", "job_workflow_ref",
+              "runner_environment", "environment", "event_name", "workflow",
+              "sha", "ref", "ref_type", "actor", "actor_id", "run_id",
+              "run_attempt", "sub",
+            ];
+            console.log(JSON.stringify(Object.fromEntries(
+              names.filter((name) => payload[name] !== undefined)
+                .map((name) => [name, payload[name]]),
+            ), null, 2));
+          '
