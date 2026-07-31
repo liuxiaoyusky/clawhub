@@ -20,7 +20,7 @@ jobs:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: 29549947f6e5d7ee90997966b5ac044529c92a90
+      DEPLOY_SHA: 329783af96416b672e4807177661c0fb2fcb64ec
       TEST_CONVEX_SITE_URL: ${{ vars.VITE_CONVEX_SITE_URL }}
       TEST_SITE_URL: ${{ vars.SITE_URL }}
       VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 29549947f6e5d7ee90997966b5ac044529c92a90
+          ref: 329783af96416b672e4807177661c0fb2fcb64ec
 
       - uses: ./.github/actions/setup-bun
 
@@ -759,12 +759,12 @@ jobs:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: 29549947f6e5d7ee90997966b5ac044529c92a90
+      DEPLOY_SHA: 329783af96416b672e4807177661c0fb2fcb64ec
       PROOF_COMPLETE: ${{ needs.permanent-test.outputs.proof_complete }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 29549947f6e5d7ee90997966b5ac044529c92a90
+          ref: 329783af96416b672e4807177661c0fb2fcb64ec
 
       - uses: ./.github/actions/setup-bun
 
