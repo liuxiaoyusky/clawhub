@@ -308,3 +308,74 @@ jobs:
           name: claw-603-claim-native-proof-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: proof/claw-603/
+
+  cleanup-backstop:
+    needs: permanent-test-claim
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/pe/claw-603-final-proof' &&
+      github.actor == 'Patrick-Erichsen'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: Test
+    env:
+      CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+      DEPLOY_SHA: 41a75789909e4d4e71bb5496a9fbcc7c13fdb303
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Enforce permanent-Test cleanup independently of the proof runner
+        run: |
+          set -euo pipefail
+          mkdir -p proof/claw-603-cleanup
+          bunx convex run --no-push appMeta:getDeploymentInfo '{}' \
+            > proof/claw-603-cleanup/deployment.json
+          jq -e --arg sha "$DEPLOY_SHA" '.appBuildSha == $sha' \
+            proof/claw-603-cleanup/deployment.json >/dev/null
+          bunx convex run --no-push skillsShMirrorVisibility:setPublicGateInternal \
+            '{
+              "enabled":false,
+              "actor":"CLAW-603 claim proof cleanup backstop",
+              "reason":"CLAW-603 claim proof independent fail-closed cleanup",
+              "confirm":"deactivate-skills-sh-public-test"
+            }' > proof/claw-603-cleanup/gate-closed.json
+          bunx convex run --no-push skillsShMirror:configureInternal \
+            '{
+              "actor":"CLAW-603 claim proof cleanup backstop",
+              "reason":"CLAW-603 claim proof independent fail-closed cleanup",
+              "confirm":"enable-skills-sh-mirror-test",
+              "enabled":false,
+              "maxRowsPerRun":50000,
+              "maxRowsPerBatch":50,
+              "maxDetailBytes":65536
+            }' > proof/claw-603-cleanup/control-disabled.json
+          bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}' \
+            > proof/claw-603-cleanup/token-rotated.json
+          bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
+            > proof/claw-603-cleanup/capabilities.json
+          bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
+            > proof/claw-603-cleanup/isolation.json
+          jq -e '
+            .skillsSh.publicCatalogEnabled == false and
+            .skillsSh.discoveryEnabled == false and
+            .skillsSh.writesEnabled == false and
+            .skillsSh.scanPlanningEnabled == false and
+            .skillsSh.scanAdmissionEnabled == false
+          ' proof/claw-603-cleanup/capabilities.json >/dev/null
+          jq -e '
+            .mirror.scansPlanned == 0 and
+            .mirror.scansAdmitted == 0
+          ' proof/claw-603-cleanup/isolation.json >/dev/null
+
+      - name: Upload CLAW-603 independent cleanup proof
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: claw-603-claim-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: proof/claw-603-cleanup/
