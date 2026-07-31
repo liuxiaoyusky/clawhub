@@ -1,5 +1,6 @@
 name: CLAW-603 Permanent Test Claim and Native Proof
 
+# Branch-only operator proof. This file is never merged; main retains the hourly production sync.
 on:
   workflow_dispatch:
 
@@ -64,6 +65,8 @@ jobs:
 
           cleanup() {
             set +e
+            # Claim writes are row-scoped. On interruption, close the global Test gate and preserve
+            # exact state for diagnosis instead of attempting an unproven inverse claim mutation.
             if [[ "$proof_complete" != "1" && -n "$operator_token" ]]; then
               post_mirror \
                 '{"operation":"deactivate","reason":"CLAW-603 claim proof cleanup"}' \
