@@ -1,8 +1,14 @@
-name: CLAW-603 Permanent Test Claim and Native Proof
+name: CLAW-603 One-Time Permanent Test Claim Recovery
 
-# Branch-only operator proof. This file is never merged; main retains the hourly production sync.
+# Branch-only continuation of interrupted proof run 30608116457. This file is never merged;
+# main retains the hourly production sync.
 on:
   workflow_dispatch:
+    inputs:
+      confirm_recovery:
+        description: Type resume-30608116457 to continue the exact interrupted Test proof
+        required: true
+        type: string
 
 concurrency:
   group: claw-603-permanent-test-proof
@@ -16,14 +22,15 @@ jobs:
     if: >-
       github.ref == 'refs/heads/pe/claw-603-final-proof' &&
       github.actor == 'Patrick-Erichsen' &&
-      github.triggering_actor == 'Patrick-Erichsen'
+      github.triggering_actor == 'Patrick-Erichsen' &&
+      inputs.confirm_recovery == 'resume-30608116457'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: c1f6ba2f07b5fc084a31286a54e23e7bce404780
+      DEPLOY_SHA: 73eb44cd70ff6c2759e5cf4748a84c7a8949a37f
       EXPECTED_CATALOG_SCAN_ATTEMPTS: 9
       EXPECTED_NATIVE_SCAN_JOBS: 16
       EXPECTED_NATIVE_SCAN_UPDATED_AT_SUM: 28554932587800
@@ -200,6 +207,17 @@ jobs:
             .scanAdmissionEnabled == false
           ' proof/claw-603/claim-control-enabled.json >/dev/null
 
+          CLAWHUB_CLAIM_PROOF_OUTPUT="proof/claw-603/claim-lifecycle.json" \
+            bun scripts/skills-sh-catalog/claw-603-claim-recovery.ts \
+            > proof/claw-603/claim-lifecycle-stdout.json
+          jq -e '
+            .ok == true and
+            .target.productionWrites == 0 and
+            .paidScans == 0 and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0
+          ' proof/claw-603/claim-lifecycle.json >/dev/null
+
           post_mirror \
             '{"operation":"verify-activate","reason":"CLAW-603 permanent Test claim precondition"}' \
             proof/claw-603/claim-activation.json
@@ -209,16 +227,6 @@ jobs:
             .scansAdmitted == 0 and
             .trendingSnapshot.status == "ready"
           ' proof/claw-603/claim-activation.json >/dev/null
-
-          bun scripts/skills-sh-catalog/claw-603-claim-proof.ts \
-            > proof/claw-603/claim-lifecycle-stdout.json
-          jq -e '
-            .ok == true and
-            .target.productionWrites == 0 and
-            .paidScans == 0 and
-            .scansPlanned == 0 and
-            .scansAdmitted == 0
-          ' proof/claw-603/claim-lifecycle.json >/dev/null
 
           native_skill_id="$(
             jq -r '
@@ -353,14 +361,15 @@ jobs:
       always() &&
       github.ref == 'refs/heads/pe/claw-603-final-proof' &&
       github.actor == 'Patrick-Erichsen' &&
-      github.triggering_actor == 'Patrick-Erichsen'
+      github.triggering_actor == 'Patrick-Erichsen' &&
+      inputs.confirm_recovery == 'resume-30608116457'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
       name: Test
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: c1f6ba2f07b5fc084a31286a54e23e7bce404780
+      DEPLOY_SHA: 73eb44cd70ff6c2759e5cf4748a84c7a8949a37f
       EXPECTED_CATALOG_SCAN_ATTEMPTS: 9
       EXPECTED_NATIVE_SCAN_JOBS: 16
       EXPECTED_NATIVE_SCAN_UPDATED_AT_SUM: 28554932587800

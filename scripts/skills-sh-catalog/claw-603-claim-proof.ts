@@ -2,20 +2,25 @@
 
 /* oxlint-disable typescript/no-explicit-any -- Test-only proof decodes live Convex JSON. */
 
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
+import { buildControlledCandidateContent } from "./claw-603-claim-proof-helpers";
 
 const EXTERNAL_ID = "patrick-erichsen/skills/html";
 const REPO = "patrick-erichsen/skills";
 const PATH = "skills/html";
 const COMMIT_A = "050daba89f6b6636470add5cb300aac46a412cf8";
 const HASH_A = "a47adb2c1ac33c088f664b5187971b63d2b958a7b9f01516d26005ca941a108f";
+const FILE_HASH_A = "42d2e89358ea927441dfede45c3b0cf89a21603bc7c32246f098d24a9cbea1ff";
 const COMMIT_B = "1111111111111111111111111111111111111111";
 const HASH_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const COMMIT_C = "2222222222222222222222222222222222222222";
 const HASH_C = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const PUBLIC_SITE = "https://academic-chihuahua-392.convex.site";
+const execFileAsync = promisify(execFile);
 
 function requireEnv(name: string) {
   const value = process.env[name]?.trim();
@@ -28,20 +33,13 @@ function assert(value: unknown, message: string): asserts value {
 }
 
 async function runCommand(command: string[]) {
-  const child = Bun.spawn(command, {
+  const [executable, ...args] = command;
+  assert(executable, "command executable is required");
+  const { stdout } = await execFileAsync(executable, args, {
     cwd: process.cwd(),
     env: process.env,
-    stdout: "pipe",
-    stderr: "pipe",
+    maxBuffer: 100 * 1024 * 1024,
   });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`${command.join(" ")} failed: ${stderr.trim() || stdout.trim()}`);
-  }
   return stdout.trim();
 }
 
@@ -66,7 +64,7 @@ async function fetchCapture(url: string, init?: RequestInit) {
   const startedAt = performance.now();
   const response = await fetch(url, init);
   const text = await response.text();
-  let body: unknown = text;
+  let body: any = text;
   try {
     body = JSON.parse(text);
   } catch {}
@@ -270,6 +268,29 @@ async function applyNativeSnapshot(
   });
 }
 
+async function cacheControlledPendingCandidateContent(
+  source: Record<string, any>,
+  mirror: Record<string, any>,
+  commit: string,
+  contentHash: string,
+) {
+  const html = source.skills.find((skill: Record<string, any>) => skill.githubPath === PATH);
+  assert(html?.githubPendingCandidateId, "controlled native candidate is not pending");
+  const discovered = buildControlledCandidateContent({
+    mirror,
+    expectedExternalId: EXTERNAL_ID,
+    expectedPath: PATH,
+    expectedFileHash: FILE_HASH_A,
+    candidateCommit: commit,
+    candidateContentHash: contentHash,
+  });
+  return await runConvex("githubSkillSync:upsertGitHubSkillCandidateContentInternal", {
+    candidateId: html.githubPendingCandidateId,
+    discovered,
+    commit,
+  });
+}
+
 function mirrorRow(
   state: Record<string, any>,
   commit: string,
@@ -456,6 +477,14 @@ const correctedObservation = await observeCorrectedMirror(
 const sourceAfterFailure = await sourceState();
 const correctedClaim = await applyClaimedSnapshot(sourceAfterFailure, COMMIT_B, HASH_B);
 await writeCheckpoint("corrected-claim-pending", { correctedClaim });
+const correctedPendingSource = await sourceState();
+const correctedContent = await cacheControlledPendingCandidateContent(
+  correctedPendingSource,
+  mirrorBefore,
+  COMMIT_B,
+  HASH_B,
+);
+await writeCheckpoint("corrected-claim-content-cached", { correctedContent });
 const retryMirror = await readMirror();
 assert(retryMirror.digest?.claimStatus === "pending", "corrected claim did not become pending");
 assert(retryMirror.digest?.claimAttempt === 2, "corrected claim attempt was not two");
@@ -500,6 +529,14 @@ assert(
 
 const nativeFollowup = await applyNativeSnapshot(nativePromoted, COMMIT_C, HASH_C);
 await writeCheckpoint("native-followup-pending", { nativeFollowup });
+const nativeFollowupPendingSource = await sourceState();
+const nativeFollowupContent = await cacheControlledPendingCandidateContent(
+  nativeFollowupPendingSource,
+  promotedMirror,
+  COMMIT_C,
+  HASH_C,
+);
+await writeCheckpoint("native-followup-content-cached", { nativeFollowupContent });
 const followupFailure = await runConvex("skillsShClaims:applyTestVerdictInternal", {
   externalId: EXTERNAL_ID,
   phase: "native-followup",
@@ -532,6 +569,14 @@ const restorationPass = await runConvex("skillsShClaims:applyTestVerdictInternal
   confirm: "pass-skills-sh-test-native-followup",
 });
 await writeCheckpoint("native-restoration-passed", { restorationPass });
+const restorationPendingSource = await sourceState();
+const restorationContent = await cacheControlledPendingCandidateContent(
+  restorationPendingSource,
+  promotedMirror,
+  COMMIT_A,
+  HASH_A,
+);
+await writeCheckpoint("native-restoration-content-cached", { restorationContent });
 const restoredSource = await sourceState();
 const restoredHtml = restoredSource.skills.find(
   (skill: Record<string, any>) => skill.githubPath === PATH,
@@ -635,7 +680,13 @@ const proof = {
     aliasAfterFollowupFailure,
     installAfterFollowupFailure,
   },
-  restoration: { restoration, restorationPass, restoredSource, restoredObservation },
+  restoration: {
+    restoration,
+    restorationPass,
+    restorationContent,
+    restoredSource,
+    restoredObservation,
+  },
   final: {
     finalMirror,
     finalAlias,
