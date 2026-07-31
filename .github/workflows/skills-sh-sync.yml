@@ -356,8 +356,13 @@ jobs:
               "maxRowsPerBatch":50,
               "maxDetailBytes":65536
             }' > proof/claw-603-cleanup/control-disabled.json
-          bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}' \
-            > proof/claw-603-cleanup/token-rotated.json
+          token_rotation="$(bunx convex run --no-push devSeed:seedCliRoleHelpFixtures '{}')"
+          jq '{
+            ok,
+            admin:{handle:.admin.handle,role:.admin.role},
+            user:{handle:.user.handle,role:.user.role}
+          }' <<<"$token_rotation" > proof/claw-603-cleanup/token-rotated.json
+          token_rotation=""
           bunx convex run --no-push rolloutCapabilities:getPublicCapabilities '{}' \
             > proof/claw-603-cleanup/capabilities.json
           bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
