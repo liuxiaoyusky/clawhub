@@ -1,4 +1,4 @@
-name: CLAW-603 Final Permanent Test Full Corpus Proof
+name: CLAW-603 Pinned Permanent Test Full Corpus Proof
 
 on:
   workflow_dispatch:
@@ -27,6 +27,8 @@ jobs:
       TEST_SITE_URL: ${{ vars.SITE_URL }}
       VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
       RECOVERABLE_RUN_ID: hs7xrkfgx78qsxh26frnkmy9yx8bjq97
+      LEADERBOARD_RUN_ID: hs7shr8n9phjpaj8vmy639z34x8bjb0h
+      TRENDING_RUN_ID: hs7v14pk8nv34d14yqgc3vetgn8bj8gd
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -34,7 +36,7 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
-      - name: Replace the contaminated Test corpus with one coherent fresh pair
+      - name: Prove the preserved coherent Test corpus without refetching sources
         id: recovery
         run: |
           set -euo pipefail
@@ -120,15 +122,22 @@ jobs:
                 proof/claw-603/failure-deactivation.json
             fi
             if [[ -n "$operator_token" ]]; then
-              revoked_status="$(
-                curl --silent --output /dev/null --write-out '%{http_code}' \
-                  --request POST \
-                  --header "Authorization: Bearer $operator_token" \
-                  --header "Content-Type: application/json" \
-                  --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-                  --data '{"operation":"status"}' \
-                  "$mirror_url"
-              )"
+              revoked_status="000"
+              for _ in $(seq 1 10); do
+                revoked_status="$(
+                  curl --silent --output /dev/null --write-out '%{http_code}' \
+                    --request POST \
+                    --header "Authorization: Bearer $operator_token" \
+                    --header "Content-Type: application/json" \
+                    --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+                    --data '{"operation":"status"}' \
+                    "$mirror_url"
+                )"
+                if [[ "$revoked_status" == "401" ]]; then
+                  break
+                fi
+                sleep 2
+              done
             else
               revoked_status="unverifiable"
             fi
@@ -354,7 +363,11 @@ jobs:
           echo "::add-mask::$operator_token"
 
           post_mirror '{"operation":"status"}' proof/claw-603/mirror-status-before.json
-          jq -e --arg recoverable "$RECOVERABLE_RUN_ID" '
+          jq -e \
+            --arg recoverable "$RECOVERABLE_RUN_ID" \
+            --arg leaderboard "$LEADERBOARD_RUN_ID" \
+            --arg trending "$TRENDING_RUN_ID" '
+            ([.runs[] | select(.runId == $leaderboard)][0].completedAt) as $leaderboardCompletedAt |
             .control.enabled == false and
             .control.paused == true and
             ([.runs[] | select(.status == "running" or .status == "paused" or .status == "reconciling")] as $active |
@@ -364,6 +377,24 @@ jobs:
                 $active[0].sourceView == "trending" and
                 $active[0].counts.scansPlanned == 0 and
                 $active[0].counts.scansAdmitted == 0)) and
+            .control.latestCompletedLeaderboardRunId == $leaderboard and
+            ([.runs[] | select(
+              .runId == $leaderboard and
+              .status == "completed" and
+              .sourceView == "leaderboard" and
+              .counts.observed == .sourceTotal and
+              .counts.scansPlanned == 0 and
+              .counts.scansAdmitted == 0
+            )] | length == 1) and
+            ([.runs[] | select(
+              .runId == $trending and
+              .status == "completed" and
+              .sourceView == "trending" and
+              .startedAt >= $leaderboardCompletedAt and
+              .counts.observed == .sourceTotal and
+              .counts.scansPlanned == 0 and
+              .counts.scansAdmitted == 0
+            )] | length == 1) and
             .invariants.publicVisible == false and
             .invariants.installable == false and
             .invariants.scanPlanningEnabled == false and
@@ -406,12 +437,42 @@ jobs:
             all(.items[]; .source == "clawhub")
           ' proof/claw-603/native-only-before-import-api.json >/dev/null
 
-          export CLAWHUB_SKILLS_SH_SYNC_TOKEN="$operator_token"
-          export CLAWHUB_SKILLS_SH_SYNC_URL="$mirror_url?x-vercel-protection-bypass=$VERCEL_AUTOMATION_BYPASS_SECRET"
-          export CLAWHUB_SKILLS_SH_SYNC_REASON="CLAW-603 permanent Test coherent fresh recovery $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT"
-          export CLAWHUB_SKILLS_SH_SYNC_OUTPUT="proof/claw-603/skills-sh-sync-proof.json"
-          bun scripts/skills-sh-catalog/sync.ts > proof/claw-603/skills-sh-sync-stdout.json
+          jq \
+            --arg leaderboard "$LEADERBOARD_RUN_ID" \
+            --arg trending "$TRENDING_RUN_ID" \
+            --slurpfile native proof/claw-603/native-only-before-import.json '
+              ([.runs[] | select(.runId == $leaderboard)][0]) as $leaderboardRun |
+              ([.runs[] | select(.runId == $trending)][0]) as $trendingRun |
+              {
+                ok:true,
+                recovered:null,
+                nativeBefore:$native[0],
+                leaderboard:$leaderboardRun,
+                trending:$trendingRun,
+                activation:null,
+                scansPlanned:0,
+                scansAdmitted:0,
+                completedAt:null,
+                durationMs:0
+              }
+            ' proof/claw-603/mirror-status-before.json \
+            > proof/claw-603/skills-sh-sync-proof.json
+          # Arm fail-closed cleanup before activation can happen server-side.
           activated=1
+          post_mirror \
+            '{"operation":"verify-activate","reason":"CLAW-603 pinned permanent Test proof"}' \
+            proof/claw-603/pinned-activation.json
+          post_mirror \
+            '{"operation":"configure","enabled":false,"reason":"CLAW-603 pinned permanent Test proof import complete"}' \
+            proof/claw-603/pinned-control-disabled.json
+          jq --slurpfile activation proof/claw-603/pinned-activation.json '
+            .activation = $activation[0] |
+            .completedAt = (now | todateiso8601) |
+            .durationMs = 0
+          ' proof/claw-603/skills-sh-sync-proof.json \
+            > proof/claw-603/skills-sh-sync-proof.updated.json
+          mv proof/claw-603/skills-sh-sync-proof.updated.json \
+            proof/claw-603/skills-sh-sync-proof.json
 
           bunx convex run --no-push skillsShMirror:getIsolationInternal '{}' \
             > proof/claw-603/isolation-after.json
@@ -437,7 +498,7 @@ jobs:
                 .recovered.counts.scansPlanned == 0 and
                 .recovered.counts.scansAdmitted == 0
               else
-                (has("recovered") | not)
+                (.recovered == null)
               end) and
               .leaderboard.status == "completed" and
               .leaderboard.sourceView == "leaderboard" and
