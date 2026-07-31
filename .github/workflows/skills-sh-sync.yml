@@ -157,10 +157,14 @@ jobs:
             --arg trendingRunId "$TRENDING_RUN_ID" '
             ([.runs[] | select(.status == "running" or .status == "paused" or .status == "reconciling")] | length == 0) and
             .invariants.publicVisible == false and
-            .invariants.scansPlanned == 0 and
-            .invariants.scansAdmitted == 0 and
+            .invariants.scanPlanningEnabled == false and
+            .invariants.scanAdmissionEnabled == false and
+            ([.runs[] | select(.runId == $leaderboardRunId or .runId == $trendingRunId)] as $proofRuns |
+              ($proofRuns | length) == 2 and
+              all($proofRuns[]; .counts.scansPlanned == 0 and .counts.scansAdmitted == 0)) and
             .control.latestCompletedLeaderboardRunId == $leaderboardRunId and
-            .control.latestCompletedTrendingRunId == $trendingRunId
+            ([.runs[] | select(.status == "completed" and .sourceView == "trending")] |
+              max_by(.startedAt).runId == $trendingRunId)
           ' proof/claw-603/mirror-status-before.json >/dev/null
 
           post_mirror \
