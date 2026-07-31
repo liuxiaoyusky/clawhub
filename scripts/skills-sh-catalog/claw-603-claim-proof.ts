@@ -101,12 +101,14 @@ async function readMirror() {
 }
 
 async function queueState() {
-  return await runInline(`
+  const state = await runInline(`
     const requests = await ctx.db.query("skillScanRequests").take(1001);
     const jobs = await ctx.db.query("securityScanJobs").take(1001);
     return {
       skillScanRequests: requests.length,
+      skillScanRequestsTruncated: requests.length > 1000,
       securityScanJobs: jobs.length,
+      securityScanJobsTruncated: jobs.length > 1000,
       securityScanUpdatedAtSum: jobs.reduce((sum, job) => sum + job.updatedAt, 0),
       jobStatuses: jobs.reduce((counts, job) => {
         counts[job.status] = (counts[job.status] ?? 0) + 1;
@@ -114,6 +116,11 @@ async function queueState() {
       }, {}),
     };
   `);
+  assert(
+    state.skillScanRequestsTruncated === false && state.securityScanJobsTruncated === false,
+    "scan queue proof exceeded the bounded complete read",
+  );
+  return state;
 }
 
 async function sourceState() {
@@ -468,6 +475,16 @@ const finalAlias = await runConvex("skillsShMirrorPublic:getByRoute", {
   slug: "html",
 });
 const finalInstall = await fetchCapture(`${PUBLIC_SITE}/api/v1/skills-sh/${EXTERNAL_ID}/install`);
+const starRestoration = star.alreadyStarred
+  ? { ok: true, unstarred: false, alreadyUnstarred: false, skipped: true }
+  : await runConvex("stars:removeStarInternal", {
+      userId: htmlBefore.ownerUserId,
+      skillId: htmlBefore._id,
+    });
+const sourceAfterStarRestoration = await sourceState();
+const htmlAfterStarRestoration = sourceAfterStarRestoration.skills.find(
+  (skill: Record<string, any>) => skill.githubPath === PATH,
+);
 const isolationAfter = await runConvex("skillsShMirror:getIsolationInternal", {});
 const queuesAfter = await queueState();
 
@@ -481,6 +498,10 @@ assert(
 assert(
   finalInstall.body?.github?.contentHash === HASH_A,
   "final install does not resolve restored hash",
+);
+assert(
+  htmlAfterStarRestoration?.statsStars === htmlBefore.statsStars,
+  "bookmark count was not restored after claim proof",
 );
 assert(
   JSON.stringify(isolationAfter) === JSON.stringify(isolationBefore),
@@ -532,7 +553,13 @@ const proof = {
     installAfterFollowupFailure,
   },
   restoration: { restoration, restorationPass, restoredSource, restoredObservation },
-  final: { finalMirror, finalAlias, finalInstall },
+  final: {
+    finalMirror,
+    finalAlias,
+    finalInstall,
+    starRestoration,
+    sourceAfterStarRestoration,
+  },
   isolationAfter,
   queuesAfter,
   scansPlanned: 0,

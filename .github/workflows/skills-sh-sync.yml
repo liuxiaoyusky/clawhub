@@ -227,22 +227,49 @@ jobs:
           start_hour="$(( current_hour - 24 ))"
           end_hour="$(( current_hour - 1 ))"
           active_generation="$(jq -r '.activeGeneration' proof/claw-603/native-hourly-state.json)"
-          bunx convex run --no-push canonicalTrending:getHourlySourcePageInternal \
-            "$(
-              jq -nc \
-                --argjson startHour "$start_hour" \
-                --argjson endHour "$end_hour" \
-                --argjson maxGeneration "$active_generation" \
-                '{
-                  startHour:$startHour,
-                  endHour:$endHour,
-                  maxGeneration:$maxGeneration,
-                  paginationOpts:{cursor:null,numItems:250}
-                }'
-            )" > proof/claw-603/native-hourly-rows.json
-          jq -e --arg skillId "$native_skill_id" '
-            any(.page[]; .skillId == $skillId and .downloads > 0)
-          ' proof/claw-603/native-hourly-rows.json >/dev/null
+          : > proof/claw-603/native-hourly-pages.jsonl
+          hourly_cursor=""
+          native_hourly_found=0
+          declare -A hourly_seen_cursors=()
+          while true; do
+            hourly_page="$(
+              bunx convex run --no-push canonicalTrending:getHourlySourcePageInternal \
+                "$(
+                  jq -nc \
+                    --arg cursor "$hourly_cursor" \
+                    --argjson startHour "$start_hour" \
+                    --argjson endHour "$end_hour" \
+                    --argjson maxGeneration "$active_generation" \
+                    '{
+                      startHour:$startHour,
+                      endHour:$endHour,
+                      maxGeneration:$maxGeneration,
+                      paginationOpts:{
+                        cursor:(if $cursor == "" then null else $cursor end),
+                        numItems:250
+                      }
+                    }'
+                )"
+            )"
+            jq -c . <<<"$hourly_page" >> proof/claw-603/native-hourly-pages.jsonl
+            if jq -e --arg skillId "$native_skill_id" '
+              any(.page[]; .skillId == $skillId and .downloads > 0)
+            ' <<<"$hourly_page" >/dev/null; then
+              native_hourly_found=1
+              break
+            fi
+            if jq -e '.isDone == true' <<<"$hourly_page" >/dev/null; then
+              break
+            fi
+            hourly_cursor="$(jq -r '.continueCursor // empty' <<<"$hourly_page")"
+            [[ -n "$hourly_cursor" ]]
+            if [[ -n "${hourly_seen_cursors[$hourly_cursor]+x}" ]]; then
+              echo "::error::Hourly source pagination repeated a cursor"
+              exit 1
+            fi
+            hourly_seen_cursors["$hourly_cursor"]=1
+          done
+          [[ "$native_hourly_found" == "1" ]]
 
           post_mirror \
             '{"operation":"deactivate","reason":"CLAW-603 native-only continuity proof"}' \
