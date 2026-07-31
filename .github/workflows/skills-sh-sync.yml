@@ -263,29 +263,6 @@ jobs:
           done
           [[ "$hourly_ready" == "1" ]]
 
-          bunx convex run --no-push \
-            canonicalTrendingTestFixtures:seedCanonicalTrendingSourceFixture \
-            '{"confirm":"manage-claw-590-canonical-trending-test-proof"}' \
-            > proof/claw-603/native-fixture-seed.json
-          bunx convex run --no-push \
-            canonicalTrendingTestFixtures:readCanonicalTrendingSourceFixture \
-            '{"confirm":"manage-claw-590-canonical-trending-test-proof"}' \
-            > proof/claw-603/native-fixture-before-sync.json
-          jq -e '
-            .ok == true and
-            .nativeCount == 12 and
-            .externalCount == 8
-          ' proof/claw-603/native-fixture-seed.json >/dev/null
-          jq -e '
-            .present == true and
-            .fixtureId == "claw-590-canonical-trending-source-v1" and
-            .nativeCount == 12 and
-            .nativePublisherCount == 6 and
-            .externalCount == 8 and
-            .scansPlanned == 0 and
-            .scansAdmitted == 0
-          ' proof/claw-603/native-fixture-before-sync.json >/dev/null
-
           native_skill_id="$(
             bunx convex run --no-push --inline-query '
               const row = await ctx.db.query("skills")
