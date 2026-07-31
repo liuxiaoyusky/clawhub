@@ -497,10 +497,10 @@ jobs:
             proof/claw-603/activation.json
           jq -e --arg leaderboard "$PRESERVED_LEADERBOARD_RUN_ID" --arg trending "$trending_run_id" '
             .activated == true and
-            .leaderboard.runId == $leaderboard and
-            .trending.runId == $trending and
-            .corpus.scansPlanned == 0 and
-            .corpus.scansAdmitted == 0 and
+            .leaderboardRunId == $leaderboard and
+            .trendingRunId == $trending and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0 and
             .trendingSnapshot.status == "ready" and
             .trendingSnapshot.sourceCounts.skillsShTrending > 0
           ' proof/claw-603/activation.json >/dev/null
