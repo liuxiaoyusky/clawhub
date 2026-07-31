@@ -254,16 +254,33 @@ jobs:
           done
           [[ "$hourly_ready" == "1" ]]
 
+          bunx convex run --no-push \
+            canonicalTrendingTestFixtures:seedCanonicalTrendingSourceFixture \
+            '{"confirm":"manage-claw-590-canonical-trending-test-proof"}' \
+            > proof/claw-603/native-fixture-seed.json
+          bunx convex run --no-push \
+            canonicalTrendingTestFixtures:readCanonicalTrendingSourceFixture \
+            '{"confirm":"manage-claw-590-canonical-trending-test-proof"}' \
+            > proof/claw-603/native-fixture-before-sync.json
+          jq -e '
+            .ok == true and
+            .nativeCount == 12 and
+            .externalCount == 8
+          ' proof/claw-603/native-fixture-seed.json >/dev/null
+          jq -e '
+            .present == true and
+            .fixtureId == "claw-590-canonical-trending-source-v1" and
+            .nativeCount == 12 and
+            .nativePublisherCount == 6 and
+            .externalCount == 8 and
+            .scansPlanned == 0 and
+            .scansAdmitted == 0
+          ' proof/claw-603/native-fixture-before-sync.json >/dev/null
+
           native_skill_id="$(
             bunx convex run --no-push --inline-query '
-              const publisher = await ctx.db.query("publishers")
-                .withIndex("by_handle", q => q.eq("handle", "patrick-erichsen"))
-                .unique();
-              if (!publisher) return null;
               const row = await ctx.db.query("skills")
-                .withIndex("by_owner_publisher_slug", q => q
-                  .eq("ownerPublisherId", publisher._id)
-                  .eq("slug", "html"))
+                .withIndex("by_slug", q => q.eq("slug", "claw-590-proof-native-01"))
                 .unique();
               return row?._id ?? null;
             ' | jq -r '. // empty'
@@ -279,27 +296,6 @@ jobs:
             .page[0].publicVersion.status == "available"
           ' proof/claw-603/native-digest-before-sync.json >/dev/null
 
-          current_hour_start="$(( $(date +%s) / 3600 * 3600 * 1000 ))"
-          occurred_at="$(( current_hour_start - 30 * 60 * 1000 ))"
-          day_start="$(( occurred_at / 86400000 * 86400000 ))"
-          identity_hash="claw-603-native-corpus-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          bunx convex run --no-push downloadMetrics:recordDownloadMetricInternal \
-            "$(
-              jq -nc \
-                --arg skillId "$native_skill_id" \
-                --arg identityHash "$identity_hash" \
-                --argjson dayStart "$day_start" \
-                --argjson occurredAt "$occurred_at" \
-                '{
-                  target:{kind:"skill",id:$skillId},
-                  identityKind:"user",
-                  identityHash:$identityHash,
-                  dayStart:$dayStart,
-                  occurredAt:$occurredAt
-                }'
-            )" > proof/claw-603/native-download-event.json
-          bunx convex run --no-push skillStatEvents:processSkillStatEventsAction '{}' \
-            > proof/claw-603/native-event-processing.json
           bunx convex run --no-push skillHourlyStats:getStateInternal '{}' \
             > proof/claw-603/native-hourly-state.json
           current_hour="$(( $(date +%s) / 3600 ))"
