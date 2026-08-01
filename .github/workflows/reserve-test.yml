@@ -53,6 +53,7 @@ jobs:
           token_seeded=0
           proof_ready=0
           mirror_url="$TEST_SITE_URL/ops/skills-sh/mirror-test"
+          convex_mirror_url="$TEST_CONVEX_SITE_URL/api/v1/operator/skills-sh/mirror"
 
           post_mirror() {
             local body="$1"
@@ -116,8 +117,7 @@ jobs:
                   --request POST \
                   --header "Authorization: Bearer $operator_token" \
                   --header "Content-Type: application/json" \
-                  --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-                  --data '{"operation":"status"}' "$mirror_url")"
+                --data '{"operation":"mirror-status"}' "$convex_mirror_url")"
                 [[ "$revoked_status" == "401" ]] && break
                 sleep $((attempt * 2))
               done
@@ -161,6 +161,14 @@ jobs:
           token_seed=""
           [[ -n "$operator_token" ]]
           echo "::add-mask::$operator_token"
+
+          curl --fail-with-body --silent --show-error --request POST \
+            --header "Authorization: Bearer $operator_token" \
+            --header "Content-Type: application/json" \
+            --data '{"operation":"mirror-status"}' "$convex_mirror_url" \
+            > proof/claw-603/direct-status-before.json
+          jq -e '.invariants.scanPlanningEnabled == false and .invariants.scanAdmissionEnabled == false' \
+            proof/claw-603/direct-status-before.json >/dev/null
 
           post_mirror '{"operation":"status"}' proof/claw-603/status-dark.json
           jq -e --arg leaderboard "$LEADERBOARD_RUN_ID" --arg trending "$TRENDING_RUN_ID" '
