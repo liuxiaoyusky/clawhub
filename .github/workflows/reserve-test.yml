@@ -271,11 +271,12 @@ jobs:
           repo="$(jq -r '.repo' proof/claw-603/external-target.json)"
           slug="$(jq -r '.slug' proof/claw-603/external-target.json)"
           reference="skills-sh:$external_id"
-          encoded_reference="$(jq -rn --arg value "$reference" '$value|@uri')"
+          qualified_query="skills-sh/$external_id"
+          encoded_query="$(jq -rn --arg value "$qualified_query" '$value|@uri')"
           encoded_owner="$(jq -rn --arg value "$owner" '$value|@uri')"
           encoded_repo="$(jq -rn --arg value "$repo" '$value|@uri')"
           encoded_slug="$(jq -rn --arg value "$slug" '$value|@uri')"
-          get_api "$TEST_CONVEX_SITE_URL/api/v1/search?q=$encoded_reference&mode=exact&limit=10" \
+          get_api "$TEST_CONVEX_SITE_URL/api/v1/search?q=$encoded_query&limit=10" \
             proof/claw-603/search.json
           get_api "$TEST_CONVEX_SITE_URL/api/v1/skills-sh/$encoded_owner/$encoded_repo/$encoded_slug" \
             proof/claw-603/detail.json
