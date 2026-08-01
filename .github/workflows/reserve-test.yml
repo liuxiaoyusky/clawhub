@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: Type prove-preserved-claw-603-on-a9d04bb
+        description: Type prove-preserved-claw-603-on-d76c965
         required: true
         type: string
 
@@ -23,7 +23,7 @@ jobs:
       github.ref == 'refs/heads/pe/claw-603-final-test-rollout' &&
       github.actor == 'Patrick-Erichsen' &&
       github.triggering_actor == 'Patrick-Erichsen' &&
-      inputs.confirm == 'prove-preserved-claw-603-on-a9d04bb'
+      inputs.confirm == 'prove-preserved-claw-603-on-d76c965'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment:
@@ -32,7 +32,7 @@ jobs:
       proof_complete: ${{ steps.complete.outputs.proof_complete }}
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      DEPLOY_SHA: a9d04bb0093326cb9a7dd4d7e7f8a82bba6d9de3
+      DEPLOY_SHA: d76c96548091b22377460ee7707b1590bbeb8568
       LEADERBOARD_RUN_ID: hs7hghcg6vt4ccf8eegxhcdz118bkg6s
       TRENDING_RUN_ID: hs7svfkgw0m67mf0k3e9p0rey98bkqxm
       TEST_CONVEX_SITE_URL: ${{ vars.VITE_CONVEX_SITE_URL }}
@@ -41,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: a9d04bb0093326cb9a7dd4d7e7f8a82bba6d9de3
+          ref: d76c96548091b22377460ee7707b1590bbeb8568
 
       - uses: ./.github/actions/setup-bun
 
@@ -375,7 +375,7 @@ jobs:
         github.ref == 'refs/heads/pe/claw-603-final-test-rollout' &&
         github.actor == 'Patrick-Erichsen' &&
         github.triggering_actor == 'Patrick-Erichsen' &&
-        inputs.confirm == 'prove-preserved-claw-603-on-a9d04bb' &&
+        inputs.confirm == 'prove-preserved-claw-603-on-d76c965' &&
         needs.permanent-test.outputs.proof_complete != '1'
       }}
     runs-on: ubuntu-latest
@@ -387,7 +387,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: a9d04bb0093326cb9a7dd4d7e7f8a82bba6d9de3
+          ref: d76c96548091b22377460ee7707b1590bbeb8568
       - uses: ./.github/actions/setup-bun
       - name: Close Test lane and controls
         run: |
