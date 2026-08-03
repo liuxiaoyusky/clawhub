@@ -1,9 +1,9 @@
 {
   "status": "pass",
   "mode": "before-after",
-  "scenario": "settled Chrome mobile validation",
+  "scenario": "final rebased mobile validation",
   "baseline": "https://clawhub.ai/",
-  "candidate": "9a6555ee92eaadd5e0a3a5d68f44349bd432e634",
+  "candidate": "6c506f2aac3d6d42ec719087618cd008be5a1cd9",
   "provider": "local-browser",
   "lanes": [
     {
@@ -14,22 +14,22 @@
         {
           "lane": "baseline",
           "name": "Published clawhub.ai after settling: page-level horizontal overflow",
-          "screenshot": "mobile-app-categories-overflow-settled.png",
-          "slug": "published-mobile-overflow-settled",
+          "screenshot": "published-mobile-overflow-final.png",
+          "slug": "published-mobile-overflow-final",
           "status": "pass"
         }
       ]
     },
     {
       "name": "candidate",
-      "ref": "9a6555ee92eaadd5e0a3a5d68f44349bd432e634",
+      "ref": "6c506f2aac3d6d42ec719087618cd008be5a1cd9",
       "baseURL": "http://localhost:3000/",
       "steps": [
         {
           "lane": "candidate",
           "name": "Proposed fix after settling: category scroll stays inside content width",
-          "screenshot": "mobile-app-categories-overflow-fixed-settled.png",
-          "slug": "proposed-mobile-overflow-fix-settled",
+          "screenshot": "proposed-mobile-overflow-fix-final.png",
+          "slug": "proposed-mobile-overflow-fix-final",
           "status": "pass"
         }
       ]
