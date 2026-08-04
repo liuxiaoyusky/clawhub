@@ -421,8 +421,8 @@
     }
   },
   "mode": "before-after",
-  "outputDir": "/Users/vyctor/.codex/worktrees/1f69/clawhub/.artifacts/clawhub-ui-proof/skills-canonical-ssr",
+  "outputDir": ".artifacts/clawhub-ui-proof/skills-canonical-ssr",
   "provider": "local-production-backend",
-  "scenario": "/Users/vyctor/.codex/worktrees/1f69/clawhub/.artifacts/clawhub-ui-proof/skills-canonical-ssr/run-proof.mjs",
+  "scenario": ".artifacts/clawhub-ui-proof/skills-canonical-ssr/run-proof.mjs",
   "status": "pass"
 }
