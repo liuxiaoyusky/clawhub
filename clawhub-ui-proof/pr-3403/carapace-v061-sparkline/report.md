@@ -1,14 +1,22 @@
-# Carapace sparkline UI proof
+# Carapace v0.6.1 visual preservation proof
 
-- URL: `http://localhost:3005/carapace-proof/carapace-sparkline-proof`
-- Fixture: local public-corpus skill with 30 days of deterministic download data
+- Candidate: `a41389a26c`
+- Local URL: `http://localhost:3005/carapace-proof/skills/carapace-sparkline-proof`
 - Browser: Codex in-app browser
-- Candidate: `31426e2220`
+- Reference image: the user-provided pre-PR ClawHub screenshot
 
-Verified in light and dark themes:
+The final candidate restores the chart source and CSS byte-for-byte to
+`origin/main`; shared `oc-sparkline` classes and `candidate/data.css` are not
+present in the final diff.
 
-- SVG composes `oc-sparkline`, `oc-sparkline-line`, and `oc-sparkline-fill`.
-- Computed line stroke remains the semantic blue `rgb(96, 165, 250)`.
-- Area fill remains the same blue at 18% alpha.
-- Hover shows the nearest date/value and the local vertical marker.
-- Page horizontal overflow is zero.
+Live candidate checks:
+
+- computed line stroke: `rgb(96, 165, 250)` from `--oc-status-info-fg`
+- stroke cap and join: `round`
+- area fill: the same semantic blue at 18% alpha
+- horizontal overflow: `0`
+- realistic 30-day local data renders the same low-variance shape as the
+  requested reference
+
+This proof supersedes the earlier synthetic alternating-value fixture, whose
+spikes came from test data rather than a production geometry change.

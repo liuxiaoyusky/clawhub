@@ -1,24 +1,18 @@
 {
   "status": "passed",
   "mode": "feature",
-  "scenario": "Carapace v0.6.1 shared sparkline with preserved blue series",
+  "scenario": "Carapace v0.6.1 upgrade with the existing smooth blue chart preserved",
   "provider": "Codex in-app browser",
-  "candidate": "31426e2220",
+  "candidate": "a41389a26c",
   "lanes": [
     {
       "name": "candidate",
       "steps": [
         {
-          "slug": "light",
-          "name": "Light theme — shared Carapace sparkline",
+          "slug": "preserved-smooth-blue",
+          "name": "Requested chart appearance preserved",
           "status": "passed",
-          "screenshot": "light.png"
-        },
-        {
-          "slug": "dark-hover",
-          "name": "Dark theme — blue sparkline hover readout and marker",
-          "status": "passed",
-          "screenshot": "dark-hover.png"
+          "screenshot": "preserved-smooth-blue.png"
         }
       ]
     }
