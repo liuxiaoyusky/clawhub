@@ -1,0 +1,26 @@
+{
+  "status": "passed",
+  "mode": "feature",
+  "scenario": "Carapace v0.6.1 shared sparkline with preserved blue series",
+  "provider": "Codex in-app browser",
+  "candidate": "31426e2220",
+  "lanes": [
+    {
+      "name": "candidate",
+      "steps": [
+        {
+          "slug": "light",
+          "name": "Light theme — shared Carapace sparkline",
+          "status": "passed",
+          "screenshot": "light.png"
+        },
+        {
+          "slug": "dark-hover",
+          "name": "Dark theme — blue sparkline hover readout and marker",
+          "status": "passed",
+          "screenshot": "dark-hover.png"
+        }
+      ]
+    }
+  ]
+}
