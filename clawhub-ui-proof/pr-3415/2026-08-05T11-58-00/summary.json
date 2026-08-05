@@ -4,7 +4,7 @@
   "provider": "Codex in-app browser",
   "scenario": "AgentMail organization catalog rows",
   "baseline": "user-supplied production screenshot",
-  "candidate": "b0287d12288d995d3ff8ae6d7fc4f7b69d1e18f8",
+  "candidate": "a573741ab222f78f04f4c030877bf6343fd63940",
   "lanes": [
     {
       "name": "baseline",
