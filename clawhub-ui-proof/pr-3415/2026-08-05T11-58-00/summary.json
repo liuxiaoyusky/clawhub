@@ -1,0 +1,32 @@
+{
+  "status": "passed",
+  "mode": "before-after",
+  "provider": "Codex in-app browser",
+  "scenario": "AgentMail organization catalog rows",
+  "baseline": "user-supplied production screenshot",
+  "candidate": "b0287d12288d995d3ff8ae6d7fc4f7b69d1e18f8",
+  "lanes": [
+    {
+      "name": "baseline",
+      "steps": [
+        {
+          "name": "AgentMail org page before",
+          "slug": "agentmail-org-page",
+          "screenshot": "agentmail.png",
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "candidate",
+      "steps": [
+        {
+          "name": "AgentMail org page after",
+          "slug": "agentmail-org-page",
+          "screenshot": "agentmail.png",
+          "status": "passed"
+        }
+      ]
+    }
+  ]
+}
