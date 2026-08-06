@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "mode": "feature",
+  "scenario": "NVIDIA SkillEvaluator results on the ClawHub skill page",
+  "provider": "local Codex app browser",
+  "candidate": "5729d3857c3a12a06ec3fabea30b7aecc4ad8db4",
+  "lanes": [
+    {
+      "name": "candidate",
+      "steps": [
+        {
+          "name": "NVIDIA doca-dpa Evals tab — desktop",
+          "slug": "nvidia-doca-dpa-evals-desktop",
+          "status": "passed",
+          "screenshot": "nvidia-doca-dpa-evals-desktop.png"
+        }
+      ]
+    }
+  ]
+}
