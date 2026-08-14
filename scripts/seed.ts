@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 
 type SeedOptions = {
+  m1?: boolean;
   previewName: string | null;
 };
 
@@ -15,7 +16,7 @@ const CONVEX_FUNCTIONS_READY_TIMEOUT_MS = 120_000;
 const REACHABILITY_POLL_MS = 500;
 
 export function parseSeedArgs(args: string[]): SeedOptions {
-  const options: SeedOptions = { previewName: null };
+  const options: SeedOptions = { m1: false, previewName: null };
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -23,6 +24,8 @@ export function parseSeedArgs(args: string[]): SeedOptions {
       options.previewName = readValue(args, ++index, arg);
     } else if (arg.startsWith("--preview-name=")) {
       options.previewName = arg.slice("--preview-name=".length);
+    } else if (arg === "--m1") {
+      options.m1 = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -37,11 +40,24 @@ export function buildSeedSteps(options: SeedOptions): SeedStep[] {
     : ["--no-push"];
   const corpusTargetArgs = options.previewName ? ["--preview-name", options.previewName] : [];
 
-  return [
+  const m1FixtureSteps: SeedStep[] = [
+    {
+      command: "bunx",
+      args: ["convex", "run", ...convexTargetArgs, "devSeed:seedPadelSkill"],
+    },
+  ];
+
+  if (options.m1) return m1FixtureSteps;
+
+  const localFixtureSteps: SeedStep[] = [
     {
       command: "bunx",
       args: ["convex", "run", ...convexTargetArgs, "devSeed:seedLocalFixtures"],
     },
+  ];
+
+  return [
+    ...localFixtureSteps,
     {
       command: "bunx",
       args: ["convex", "run", ...convexTargetArgs, "devSeed:seedCanonicalSearchFixture"],
@@ -72,6 +88,9 @@ export function assertSeedTargetAllowed(
   options: SeedOptions,
   env: NodeJS.ProcessEnv = process.env,
 ) {
+  if (options.m1 && options.previewName) {
+    throw new Error("M1 seed requires a local Convex deployment");
+  }
   if (options.previewName) {
     assertPreviewSeedTargetAllowed(env);
     return;

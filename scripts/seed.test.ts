@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { assertSeedTargetAllowed, buildSeedSteps, parseSeedArgs } from "./seed";
 
 describe("shared seed runner", () => {
+  it("builds the M1 seed from the searchable Padel fixture only", () => {
+    expect(buildSeedSteps(parseSeedArgs(["--m1"]))).toEqual([
+      {
+        command: "bunx",
+        args: ["convex", "run", "--no-push", "devSeed:seedPadelSkill"],
+      },
+    ]);
+  });
+
   it("uses the local deployment selected by the environment by default", () => {
     expect(buildSeedSteps(parseSeedArgs([]))).toEqual([
       {
@@ -85,5 +94,13 @@ describe("shared seed runner", () => {
         CONVEX_DEPLOY_KEY: "prod:wry-manatee-359|secret",
       }),
     ).toThrow("requires a Convex Preview deploy key");
+  });
+
+  it("rejects preview targets for the M1 local fixture seed", () => {
+    expect(() =>
+      assertSeedTargetAllowed(parseSeedArgs(["--m1", "--preview-name", "feature/demo"]), {
+        CONVEX_DEPLOY_KEY: "preview:openclaw:clawhub|secret",
+      }),
+    ).toThrow("M1 seed requires a local Convex deployment");
   });
 });

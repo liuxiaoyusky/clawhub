@@ -64,6 +64,7 @@
     "security:codex-worker": "bun scripts/security/run-codex-scan-worker.ts",
     "seed": "bun scripts/seed.ts",
     "seed:dev": "bun run setup:worktree -- --quiet && bun scripts/dev-worktree.ts --seed-only",
+    "seed:m1": "bun scripts/seed.ts --m1",
     "seed:public-corpus": "bun run setup:worktree -- --quiet && bunx convex dev --once --typecheck=disable && bun scripts/public-corpus/seed-public-corpus.ts",
     "seed:test": "bun scripts/seed-test.ts",
     "seed:test:import-snapshot": "bun scripts/staging-seed/import-test-snapshot.ts",
