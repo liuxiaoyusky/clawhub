@@ -13,9 +13,19 @@ type HeaderAuthStatus = {
 };
 
 const navigateMock = vi.fn();
-const { profileHandleMock, signInMock, useUnifiedSearchMock } = vi.hoisted(() => ({
+const {
+  beginGitHubLinkMock,
+  identityStatusMock,
+  profileHandleMock,
+  signInMock,
+  useQueryMock,
+  useUnifiedSearchMock,
+} = vi.hoisted(() => ({
+  beginGitHubLinkMock: vi.fn(),
+  identityStatusMock: vi.fn(),
   profileHandleMock: vi.fn(),
   signInMock: vi.fn(),
+  useQueryMock: vi.fn(),
   useUnifiedSearchMock: vi.fn(),
 }));
 
@@ -123,7 +133,8 @@ vi.mock("@convex-dev/auth/react", () => ({
 }));
 
 vi.mock("convex/react", () => ({
-  useQuery: () => profileHandleMock(),
+  useQuery: (...args: unknown[]) => useQueryMock(...args),
+  useMutation: () => beginGitHubLinkMock,
 }));
 
 const authStatusMock = vi.fn<() => HeaderAuthStatus>(() => ({
@@ -270,6 +281,12 @@ describe("Header", () => {
       me: null,
     });
     profileHandleMock.mockReturnValue(null);
+    identityStatusMock.mockReturnValue({ feishuEnabled: false, status: "signed_out" });
+    beginGitHubLinkMock.mockReset();
+    useQueryMock.mockReset();
+    useQueryMock.mockImplementation(() =>
+      useQueryMock.mock.calls.length % 2 === 1 ? identityStatusMock() : profileHandleMock(),
+    );
     useUnifiedSearchMock.mockReturnValue(defaultUnifiedSearchResult);
     signInMock.mockReset();
     signInMock.mockResolvedValue({ signingIn: true });
@@ -368,6 +385,15 @@ describe("Header", () => {
     expect(fullCopy?.childNodes).toHaveLength(1);
     expect(signInButton.querySelector(".sign-in-with")).toBeNull();
     expect(signInButton.querySelector(".sign-in-compact-copy")?.textContent).toBe("Sign in");
+  });
+
+  it("keeps GitHub available alongside Feishu when the M2 provider is enabled", () => {
+    identityStatusMock.mockReturnValue({ feishuEnabled: true, status: "signed_out" });
+
+    render(<Header />);
+
+    expect(screen.getByRole("button", { name: "Sign in with Feishu" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeTruthy();
   });
 
   it("shows an auth error when the GitHub sign-in request does not start", async () => {

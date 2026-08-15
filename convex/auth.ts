@@ -13,6 +13,8 @@ import {
   replaceGitHubOrgMemberships,
 } from "./lib/githubOrgMemberships";
 import { shouldScheduleGitHubProfileSync } from "./lib/githubProfileSync";
+import { isFeishuAuthEnabled } from "./lib/m2AuthConfig";
+import { hashToken } from "./lib/tokens";
 
 export const BANNED_REAUTH_MESSAGE =
   "This account has been banned and cannot sign in. If you believe this is a mistake, appeal this decision: https://appeals.openclaw.ai/.";
@@ -25,6 +27,7 @@ const REAUTH_BLOCKING_BAN_ACTIONS = new Set([
   "user.autoban.publisher_abuse",
 ]);
 const DEV_PERSONAS = new Set(["owner", "user", "admin", "officialOrgMember", "abusePublisher"]);
+const FEISHU_TICKET_PATTERN = /^[a-f0-9]{64}$/i;
 
 export function normalizeGitHubProfileId(profileId: unknown) {
   const id =
@@ -183,6 +186,19 @@ async function schedulePostUserCreatedOrUpdated(
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
   providers: [
     createGitHubAuthProvider(),
+    ConvexCredentials({
+      id: "feishu",
+      authorize: async (credentials, ctx) => {
+        if (!isFeishuAuthEnabled()) throw new Error("Feishu sign-in is unavailable");
+        const ticket = typeof credentials.ticket === "string" ? credentials.ticket.trim() : "";
+        if (!FEISHU_TICKET_PATTERN.test(ticket)) throw new Error("Invalid Feishu sign-in ticket");
+        const userId = (await ctx.runMutation(
+          internal.identityAuth.redeemFeishuSessionTicketInternal,
+          { ticketHash: await hashToken(ticket) },
+        )) as Id<"users">;
+        return { userId };
+      },
+    }),
     ConvexCredentials({
       id: "dev-persona",
       authorize: async (credentials, ctx) => {

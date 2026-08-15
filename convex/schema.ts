@@ -191,6 +191,7 @@ const users = defineTable({
   purgedAt: v.optional(v.number()),
   deletedAt: v.optional(v.number()),
   banReason: v.optional(v.string()),
+  enterpriseIdentityVerifiedAt: v.optional(v.number()),
   createdAt: v.optional(v.number()),
   updatedAt: v.optional(v.number()),
 })
@@ -217,6 +218,87 @@ const authRefreshTokens = defineTable({
   .index("sessionId", ["sessionId"])
   .index("sessionIdAndParentRefreshTokenId", ["sessionId", "parentRefreshTokenId"])
   .index("by_expiration_time", ["expirationTime"]);
+
+const identityAuthAttempts = defineTable({
+  stateHash: v.string(),
+  traceId: v.string(),
+  purpose: v.union(v.literal("sign_in"), v.literal("link_existing_user")),
+  targetUserId: v.optional(v.id("users")),
+  redirectTo: v.string(),
+  status: v.union(
+    v.literal("pending"),
+    v.literal("processing"),
+    v.literal("completed"),
+    v.literal("rejected"),
+    v.literal("expired"),
+  ),
+  createdAt: v.number(),
+  expiresAt: v.number(),
+  callbackReceivedAt: v.optional(v.number()),
+  completedAt: v.optional(v.number()),
+})
+  .index("by_state_hash", ["stateHash"])
+  .index("by_expires_at", ["expiresAt"]);
+
+const identityAuthTickets = defineTable({
+  ticketHash: v.string(),
+  userId: v.id("users"),
+  traceId: v.string(),
+  createdAt: v.number(),
+  expiresAt: v.number(),
+  usedAt: v.optional(v.number()),
+})
+  .index("by_ticket_hash", ["ticketHash"])
+  .index("by_expires_at", ["expiresAt"]);
+
+const identityAuthLinks = defineTable({
+  secretHash: v.string(),
+  targetUserId: v.id("users"),
+  provider: v.literal("github"),
+  traceId: v.string(),
+  createdAt: v.number(),
+  expiresAt: v.number(),
+  usedAt: v.optional(v.number()),
+})
+  .index("by_secret_hash", ["secretHash"])
+  .index("by_expires_at", ["expiresAt"]);
+
+const authTraceEvents = defineTable({
+  traceId: v.string(),
+  provider: v.union(v.literal("feishu"), v.literal("github")),
+  stage: v.union(
+    v.literal("oauth_started"),
+    v.literal("oauth_callback_received"),
+    v.literal("token_exchange_finished"),
+    v.literal("profile_validated"),
+    v.literal("identity_bound"),
+    v.literal("session_created"),
+    v.literal("rejected"),
+  ),
+  outcome: v.union(
+    v.literal("started"),
+    v.literal("success"),
+    v.literal("failure"),
+    v.literal("rejected"),
+  ),
+  occurredAt: v.number(),
+  reasonCode: v.optional(
+    v.union(
+      v.literal("oauth_state_invalid"),
+      v.literal("oauth_callback_invalid"),
+      v.literal("oauth_access_denied"),
+      v.literal("token_exchange_failed"),
+      v.literal("profile_validation_failed"),
+      v.literal("identity_binding_failed"),
+      v.literal("identity_conflict"),
+      v.literal("session_creation_failed"),
+      v.literal("provider_unavailable"),
+    ),
+  ),
+  expiresAt: v.number(),
+})
+  .index("by_trace_id", ["traceId"])
+  .index("by_expires_at", ["expiresAt"]);
 
 const publishers = defineTable({
   kind: v.union(v.literal("user"), v.literal("org")),
@@ -4276,6 +4358,10 @@ export default defineSchema({
   ...authTables,
   authSessions,
   authRefreshTokens,
+  identityAuthAttempts,
+  identityAuthTickets,
+  identityAuthLinks,
+  authTraceEvents,
   users,
   publishers,
   githubOrgMemberships,

@@ -41,7 +41,6 @@ import {
 import { buildUserSearchResults } from "./lib/userSearch";
 
 const DEFAULT_ROLE = "user";
-const ADMIN_HANDLE = "steipete";
 const MAX_USER_LIST_LIMIT = 200;
 const MAX_USER_SEARCH_SCAN = 5_000;
 const MIN_USER_SEARCH_SCAN = 500;
@@ -999,7 +998,7 @@ async function computeEnsureUpdates(ctx: MutationCtx, user: Doc<"users">) {
   }
 
   if (!user.role) {
-    updates.role = baseHandle === ADMIN_HANDLE ? "admin" : DEFAULT_ROLE;
+    updates.role = DEFAULT_ROLE;
   }
 
   if (!user.createdAt) updates.createdAt = user._creationTime;

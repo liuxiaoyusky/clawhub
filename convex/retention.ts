@@ -84,6 +84,54 @@ export const pruneExpiredAuthRefreshTokensInternal = internalMutation({
   },
 });
 
+export const pruneExpiredIdentityAuthInternal = internalMutation({
+  args: {
+    batchSize: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = normalizeRetentionBatchSize(args.batchSize);
+    const now = Date.now();
+    const attempts = await ctx.db
+      .query("identityAuthAttempts")
+      .withIndex("by_expires_at", (q) => q.lt("expiresAt", now))
+      .take(batchSize);
+    const tickets = await ctx.db
+      .query("identityAuthTickets")
+      .withIndex("by_expires_at", (q) => q.lt("expiresAt", now))
+      .take(batchSize);
+    const links = await ctx.db
+      .query("identityAuthLinks")
+      .withIndex("by_expires_at", (q) => q.lt("expiresAt", now))
+      .take(batchSize);
+    const traces = await ctx.db
+      .query("authTraceEvents")
+      .withIndex("by_expires_at", (q) => q.lt("expiresAt", now))
+      .take(batchSize);
+
+    for (const row of [...attempts, ...tickets, ...links, ...traces]) {
+      await ctx.db.delete(row._id);
+    }
+
+    const hasMore =
+      attempts.length === batchSize ||
+      tickets.length === batchSize ||
+      links.length === batchSize ||
+      traces.length === batchSize;
+    if (hasMore) {
+      await ctx.scheduler.runAfter(0, internal.retention.pruneExpiredIdentityAuthInternal, {
+        batchSize,
+      });
+    }
+    return {
+      deletedAttempts: attempts.length,
+      deletedTickets: tickets.length,
+      deletedLinks: links.length,
+      deletedTraces: traces.length,
+      hasMore,
+    };
+  },
+});
+
 export const pruneExpiredPublisherInvitesInternal = internalMutation({
   args: {
     batchSize: v.optional(v.number()),

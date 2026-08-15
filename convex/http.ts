@@ -67,6 +67,7 @@ import {
   skillsShCatalogPublicV1Http,
 } from "./httpApiV1";
 import { preflightHandler } from "./httpPreflight";
+import { feishuOAuthCallbackHttp } from "./identityAuthHttp";
 import { installRateLimitedRoutes } from "./lib/httpRouteRateLimit";
 import {
   packageInspectorAcknowledgeHttp,
@@ -80,6 +81,12 @@ import { skillPresentationAssetHttp } from "./skillPresentationAssetsHttp";
 const http = installRateLimitedRoutes(httpRouter());
 
 auth.addHttpRoutes(http);
+
+http.route({
+  path: "/api/m2-auth/feishu/callback",
+  method: "GET",
+  handler: feishuOAuthCallbackHttp,
+});
 
 http.route({
   pathPrefix: "/api/v1/skill-icons/",

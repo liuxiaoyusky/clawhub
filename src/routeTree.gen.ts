@@ -26,6 +26,8 @@ import { Route as StarsRouteImport } from './routes/stars'
 import { Route as UploadRouteImport } from './routes/upload'
 import { Route as OwnerSlugRouteImport } from './routes/$owner/$slug'
 import { Route as AuthDocsRouteImport } from './routes/auth/docs'
+import { Route as AuthFeishuRouteImport } from './routes/auth/feishu'
+import { Route as AuthGithubLinkRouteImport } from './routes/auth/github-link'
 import { Route as CliAuthRouteImport } from './routes/cli/auth'
 import { Route as CliDeviceRouteImport } from './routes/cli/device'
 import { Route as OfficialIndexRouteImport } from './routes/official/index'
@@ -146,6 +148,16 @@ const OwnerSlugRoute = OwnerSlugRouteImport.update({
 const AuthDocsRoute = AuthDocsRouteImport.update({
   id: '/auth/docs',
   path: '/auth/docs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthFeishuRoute = AuthFeishuRouteImport.update({
+  id: '/auth/feishu',
+  path: '/auth/feishu',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthGithubLinkRoute = AuthGithubLinkRouteImport.update({
+  id: '/auth/github-link',
+  path: '/auth/github-link',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CliAuthRoute = CliAuthRouteImport.update({
@@ -357,6 +369,8 @@ export interface FileRoutesByFullPath {
   '/upload': typeof UploadRoute
   '/$owner/$slug': typeof OwnerSlugRouteWithChildren
   '/auth/docs': typeof AuthDocsRoute
+  '/auth/feishu': typeof AuthFeishuRoute
+  '/auth/github-link': typeof AuthGithubLinkRoute
   '/cli/auth': typeof CliAuthRoute
   '/cli/device': typeof CliDeviceRoute
   '/orgs/$handle': typeof OrgsHandleRoute
@@ -412,6 +426,8 @@ export interface FileRoutesByTo {
   '/upload': typeof UploadRoute
   '/$owner/$slug': typeof OwnerSlugRouteWithChildren
   '/auth/docs': typeof AuthDocsRoute
+  '/auth/feishu': typeof AuthFeishuRoute
+  '/auth/github-link': typeof AuthGithubLinkRoute
   '/cli/auth': typeof CliAuthRoute
   '/cli/device': typeof CliDeviceRoute
   '/orgs/$handle': typeof OrgsHandleRoute
@@ -468,6 +484,8 @@ export interface FileRoutesById {
   '/upload': typeof UploadRoute
   '/$owner/$slug': typeof OwnerSlugRouteWithChildren
   '/auth/docs': typeof AuthDocsRoute
+  '/auth/feishu': typeof AuthFeishuRoute
+  '/auth/github-link': typeof AuthGithubLinkRoute
   '/cli/auth': typeof CliAuthRoute
   '/cli/device': typeof CliDeviceRoute
   '/orgs/$handle': typeof OrgsHandleRoute
@@ -525,6 +543,8 @@ export interface FileRouteTypes {
     | '/upload'
     | '/$owner/$slug'
     | '/auth/docs'
+    | '/auth/feishu'
+    | '/auth/github-link'
     | '/cli/auth'
     | '/cli/device'
     | '/orgs/$handle'
@@ -580,6 +600,8 @@ export interface FileRouteTypes {
     | '/upload'
     | '/$owner/$slug'
     | '/auth/docs'
+    | '/auth/feishu'
+    | '/auth/github-link'
     | '/cli/auth'
     | '/cli/device'
     | '/orgs/$handle'
@@ -635,6 +657,8 @@ export interface FileRouteTypes {
     | '/upload'
     | '/$owner/$slug'
     | '/auth/docs'
+    | '/auth/feishu'
+    | '/auth/github-link'
     | '/cli/auth'
     | '/cli/device'
     | '/orgs/$handle'
@@ -691,6 +715,8 @@ export interface RootRouteChildren {
   UploadRoute: typeof UploadRoute
   OwnerSlugRoute: typeof OwnerSlugRouteWithChildren
   AuthDocsRoute: typeof AuthDocsRoute
+  AuthFeishuRoute: typeof AuthFeishuRoute
+  AuthGithubLinkRoute: typeof AuthGithubLinkRoute
   CliAuthRoute: typeof CliAuthRoute
   CliDeviceRoute: typeof CliDeviceRoute
   OrgsHandleRoute: typeof OrgsHandleRoute
@@ -835,6 +861,20 @@ declare module '@tanstack/react-router' {
       path: '/auth/docs'
       fullPath: '/auth/docs'
       preLoaderRoute: typeof AuthDocsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/feishu': {
+      id: '/auth/feishu'
+      path: '/auth/feishu'
+      fullPath: '/auth/feishu'
+      preLoaderRoute: typeof AuthFeishuRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/github-link': {
+      id: '/auth/github-link'
+      path: '/auth/github-link'
+      fullPath: '/auth/github-link'
+      preLoaderRoute: typeof AuthGithubLinkRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/cli/auth': {
@@ -1185,6 +1225,8 @@ const rootRouteChildren: RootRouteChildren = {
   UploadRoute: UploadRoute,
   OwnerSlugRoute: OwnerSlugRouteWithChildren,
   AuthDocsRoute: AuthDocsRoute,
+  AuthFeishuRoute: AuthFeishuRoute,
+  AuthGithubLinkRoute: AuthGithubLinkRoute,
   CliAuthRoute: CliAuthRoute,
   CliDeviceRoute: CliDeviceRoute,
   OrgsHandleRoute: OrgsHandleRoute,

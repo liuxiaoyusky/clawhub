@@ -1,6 +1,6 @@
 import { useAuthActions } from "@convex-dev/auth/react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import {
   ArrowRight,
   Bookmark,
@@ -28,6 +28,7 @@ import {
   routeToBannedAccountPage,
 } from "../lib/authErrorMessage";
 import { gravatarUrl } from "../lib/gravatar";
+import { writeGitHubIdentityLinkSecret } from "../lib/identityLink";
 import { PRIMARY_NAV_ITEMS, SECONDARY_NAV_ITEMS } from "../lib/nav-items";
 import { buildPublisherProfileHref, buildSkillDetailHref } from "../lib/ownerRoute";
 import { buildPluginDetailHref, displayPluginPackageName } from "../lib/pluginRoutes";
@@ -43,6 +44,7 @@ import {
   type UnifiedPluginResult,
   type UnifiedSkillResult,
 } from "../lib/useUnifiedSearch";
+import { FeishuSignInButton } from "./FeishuSignInButton";
 import { MarketplaceIcon } from "./MarketplaceIcon";
 import { OfficialBadge } from "./OfficialBadge";
 import { Button } from "./ui/button";
@@ -127,6 +129,7 @@ type TypeaheadItem =
 export default function Header() {
   const { isAuthenticated, isLoading, me } = useAuthStatus();
   const { signIn, signOut } = useAuthActions();
+  const beginGitHubLink = useMutation(api.identityAuth.beginGitHubLink);
   const { theme, mode, setMode } = useThemeMode();
   const navigate = useNavigate();
   const location = useLocation();
@@ -135,7 +138,9 @@ export default function Header() {
   const rawHandle = me?.handle ?? me?.displayName ?? "user";
   const handle = rawHandle.length > 25 ? `${rawHandle.slice(0, 25)}…` : rawHandle;
   const initial = (me?.displayName ?? me?.name ?? rawHandle).charAt(0).toUpperCase();
-  const isAuthResolving = isLoading || (isAuthenticated && me === undefined);
+  const identityStatus = useQuery(api.identityAuth.getIdentityStatus, {});
+  const needsFeishuLink = identityStatus?.status === "needs_feishu_link";
+  const isAuthResolving = isLoading || (isAuthenticated && me === undefined && !needsFeishuLink);
   const profileHandle = useQuery(
     api.publishers.getMyProfileHandle,
     isAuthenticated && me ? {} : "skip",
@@ -670,6 +675,24 @@ export default function Header() {
                       Settings
                     </Link>
                   </DropdownMenuItem>
+                  {identityStatus?.feishuEnabled ? (
+                    <DropdownMenuItem
+                      onClick={() => {
+                        void beginGitHubLink()
+                          .then(({ secret }) => {
+                            writeGitHubIdentityLinkSecret(secret);
+                            return signIn("github", { redirectTo: "/auth/github-link" });
+                          })
+                          .catch(() => {
+                            setAuthError(
+                              "Unable to start GitHub identity linking. Please try again.",
+                            );
+                          });
+                      }}
+                    >
+                      Link GitHub identity
+                    </DropdownMenuItem>
+                  ) : null}
                   <DropdownMenuSeparator />
                   <div className="user-dropdown-theme-row" role="group" aria-label="Theme">
                     {THEME_MODE_ITEMS.map(({ mode: themeMode, label, Icon }) => (
@@ -693,8 +716,22 @@ export default function Header() {
               </DropdownMenu>
             ) : isAuthResolving ? (
               <div className="github-sign-in-button auth-loading-placeholder" aria-hidden="true" />
+            ) : needsFeishuLink ? (
+              <FeishuSignInButton
+                variant="primary"
+                size="sm"
+                intent="link_existing_user"
+                redirectTo="/dashboard"
+              >
+                Verify with Feishu
+              </FeishuSignInButton>
             ) : (
               <>
+                {identityStatus?.feishuEnabled ? (
+                  <FeishuSignInButton variant="primary" size="sm" redirectTo="/dashboard">
+                    Sign in with Feishu
+                  </FeishuSignInButton>
+                ) : null}
                 <Button
                   variant="outline"
                   size="sm"

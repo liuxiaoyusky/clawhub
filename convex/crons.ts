@@ -239,6 +239,13 @@ if (process.env.CLAWHUB_DISABLE_CRONS !== "1" && process.env.CLAWHUB_PREVIEW !==
   );
 
   crons.interval(
+    "m2-identity-auth-retention-prune",
+    { hours: 1 },
+    internal.retention.pruneExpiredIdentityAuthInternal,
+    { batchSize: RETENTION_STANDARD_BATCH_SIZE },
+  );
+
+  crons.interval(
     "publisher-invite-retention-prune",
     { hours: 6 },
     internal.retention.pruneExpiredPublisherInvitesInternal,

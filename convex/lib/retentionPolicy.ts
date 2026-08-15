@@ -76,6 +76,33 @@ export const RETENTION_POLICIES = {
     prune: "retention.pruneExpiredAuthRefreshTokensInternal",
     retention: "Convex Auth inactive session duration.",
   }),
+  identityAuthAttempts: ephemeral("M2 Feishu OAuth state rows are single-use callback state.", {
+    expirationField: "expiresAt",
+    expirationIndex: "by_expires_at",
+    prune: "retention.pruneExpiredIdentityAuthInternal",
+    retention: "Ten minutes after authorization starts.",
+  }),
+  identityAuthTickets: ephemeral(
+    "M2 browser-to-session exchange tickets are single-use and hashed.",
+    {
+      expirationField: "expiresAt",
+      expirationIndex: "by_expires_at",
+      prune: "retention.pruneExpiredIdentityAuthInternal",
+      retention: "Two minutes after OAuth completion.",
+    },
+  ),
+  identityAuthLinks: ephemeral("M2 GitHub identity-link proofs are one-time and hashed.", {
+    expirationField: "expiresAt",
+    expirationIndex: "by_expires_at",
+    prune: "retention.pruneExpiredIdentityAuthInternal",
+    retention: "Ten minutes after link issuance.",
+  }),
+  authTraceEvents: ephemeral("Non-sensitive M2 auth stage traces support short-term debugging.", {
+    expirationField: "expiresAt",
+    expirationIndex: "by_expires_at",
+    prune: "retention.pruneExpiredIdentityAuthInternal",
+    retention: "Seven days; no provider account or credential data is retained.",
+  }),
   authVerificationCodes: ephemeral("One-time verification codes expire by timestamp.", {
     expirationField: "expirationTime",
     prune: "convex-auth internal validation",

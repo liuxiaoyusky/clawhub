@@ -707,7 +707,7 @@ describe("ensureHandler", () => {
     expect(result).toMatchObject({ _id: "users:4" });
   });
 
-  it("sets admin role when normalized handle is steipete and role is missing", async () => {
+  it("does not elevate a GitHub handle when role is missing", async () => {
     const { ctx, patch } = makeCtx();
     vi.mocked(requireUser).mockResolvedValue({
       userId: "users:admin",
@@ -725,7 +725,7 @@ describe("ensureHandler", () => {
 
     expect(patch).toHaveBeenCalledWith("users:admin", {
       displayName: "steipete",
-      role: "admin",
+      role: "user",
       updatedAt: expect.any(Number),
     });
   });
