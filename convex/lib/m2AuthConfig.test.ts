@@ -43,7 +43,8 @@ describe("M2 Feishu auth configuration", () => {
 
     const authorizationUrl = new URL(buildFeishuAuthorizationUrl(config, "a".repeat(64)));
     expect(authorizationUrl.origin).toBe("https://accounts.feishu.cn");
-    expect(authorizationUrl.searchParams.get("app_id")).toBe("cli_fixture");
+    expect(authorizationUrl.searchParams.get("client_id")).toBe("cli_fixture");
+    expect(authorizationUrl.searchParams.get("response_type")).toBe("code");
     expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(config.callbackUrl);
     expect(authorizationUrl.toString()).not.toContain("fixture-secret");
 

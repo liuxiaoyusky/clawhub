@@ -253,6 +253,10 @@ export const recordAuthTraceInternal = internalMutation({
         v.literal("oauth_callback_invalid"),
         v.literal("oauth_access_denied"),
         v.literal("token_exchange_failed"),
+        v.literal("token_exchange_client_secret_invalid"),
+        v.literal("token_exchange_authorization_code_invalid"),
+        v.literal("token_exchange_user_not_authorized"),
+        v.literal("token_exchange_redirect_uri_mismatch"),
         v.literal("profile_validation_failed"),
         v.literal("identity_binding_failed"),
         v.literal("identity_conflict"),
@@ -279,6 +283,10 @@ export const rejectFeishuCallbackInternal = internalMutation({
       v.literal("oauth_callback_invalid"),
       v.literal("oauth_access_denied"),
       v.literal("token_exchange_failed"),
+      v.literal("token_exchange_client_secret_invalid"),
+      v.literal("token_exchange_authorization_code_invalid"),
+      v.literal("token_exchange_user_not_authorized"),
+      v.literal("token_exchange_redirect_uri_mismatch"),
       v.literal("profile_validation_failed"),
       v.literal("identity_binding_failed"),
       v.literal("identity_conflict"),
@@ -583,35 +591,61 @@ async function exchangeFeishuCode(args: {
   appSecret: string;
   callbackUrl: string;
   code: string;
-}) {
-  const tokenResponse = await fetch(FEISHU_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json; charset=utf-8" },
-    body: JSON.stringify({
-      grant_type: "authorization_code",
-      client_id: args.appId,
-      client_secret: args.appSecret,
-      code: args.code,
-      redirect_uri: args.callbackUrl,
-    }),
-  });
-  if (!tokenResponse.ok) return null;
+}): Promise<{ ok: true; accessToken: string } | { ok: false; reasonCode: AuthTraceReasonCode }> {
+  let tokenResponse: Response;
+  try {
+    tokenResponse = await fetch(FEISHU_TOKEN_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        client_id: args.appId,
+        client_secret: args.appSecret,
+        code: args.code,
+        redirect_uri: args.callbackUrl,
+      }),
+    });
+  } catch {
+    return { ok: false, reasonCode: "provider_unavailable" };
+  }
   const tokenPayload = (await tokenResponse.json().catch(() => null)) as {
-    data?: { access_token?: unknown };
+    code?: unknown;
+    access_token?: unknown;
   } | null;
-  const accessToken = tokenPayload?.data?.access_token;
-  if (typeof accessToken !== "string" || !accessToken.trim()) return null;
-  return accessToken;
+  const reasonCode = classifyFeishuTokenExchangeFailure(tokenPayload?.code, tokenResponse.ok);
+  if (reasonCode) return { ok: false, reasonCode };
+  const accessToken = tokenPayload?.access_token;
+  if (typeof accessToken !== "string" || !accessToken.trim()) {
+    return { ok: false, reasonCode: "token_exchange_failed" };
+  }
+  return { ok: true, accessToken };
+}
+
+function classifyFeishuTokenExchangeFailure(code: unknown, responseOk: boolean) {
+  if (code === 0 && responseOk) return null;
+  if (code === 20002) return "token_exchange_client_secret_invalid" as const;
+  if (code === 20003 || code === 20004 || code === 20024 || code === 20065) {
+    return "token_exchange_authorization_code_invalid" as const;
+  }
+  if (code === 20010) return "token_exchange_user_not_authorized" as const;
+  if (code === 20071) return "token_exchange_redirect_uri_mismatch" as const;
+  if (code === 20050 || code === 20072) return "provider_unavailable" as const;
+  return "token_exchange_failed" as const;
 }
 
 async function fetchFeishuProviderAccountId(accessToken: string) {
   const profileResponse = await fetch(FEISHU_USER_INFO_URL, {
-    headers: { authorization: `Bearer ${accessToken}` },
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json; charset=utf-8",
+    },
   });
   if (!profileResponse.ok) return null;
   const profilePayload = (await profileResponse.json().catch(() => null)) as {
+    code?: unknown;
     data?: { open_id?: unknown };
   } | null;
+  if (profilePayload?.code !== 0) return null;
   const openId = profilePayload?.data?.open_id;
   return typeof openId === "string" && openId.trim() ? openId.trim() : null;
 }
@@ -672,13 +706,9 @@ export const completeFeishuOAuthCallbackInternal = internalAction({
       };
     };
 
-    let accessToken: string | null = null;
-    try {
-      accessToken = await exchangeFeishuCode({ ...config, code: args.code });
-    } catch {
-      return await reject("token_exchange_failed");
-    }
-    if (!accessToken) return await reject("token_exchange_failed");
+    const tokenExchange = await exchangeFeishuCode({ ...config, code: args.code });
+    if (!tokenExchange.ok) return await reject(tokenExchange.reasonCode);
+    const accessToken = tokenExchange.accessToken;
     await ctx.runMutation(internal.identityAuth.recordAuthTraceInternal, {
       traceId,
       provider: "feishu",
@@ -780,3 +810,5 @@ export const rejectFeishuOAuthCallbackInternal = internalAction({
     };
   },
 });
+
+export const __test = { exchangeFeishuCode, fetchFeishuProviderAccountId };

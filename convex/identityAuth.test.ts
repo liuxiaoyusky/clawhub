@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { ensurePersonalPublisherForUserMock } = vi.hoisted(() => ({
   ensurePersonalPublisherForUserMock: vi.fn(),
@@ -15,7 +15,7 @@ vi.mock("./functions", () => ({
   query: (definition: { handler: unknown }) => ({ _handler: definition.handler }),
 }));
 
-import { completeFeishuIdentityInternal } from "./identityAuth";
+import { __test as identityAuthTest, completeFeishuIdentityInternal } from "./identityAuth";
 
 const TRACE_ID = "auth_123e4567-e89b-42d3-a456-426614174000";
 const PROVIDER_ACCOUNT_ID = "ou_provider_fixture";
@@ -57,6 +57,10 @@ type CompleteHandler = {
 };
 
 const completeHandler = (completeFeishuIdentityInternal as unknown as CompleteHandler)._handler;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("M2 Feishu identity binding", () => {
   it("binds the provider to the existing canonical user, resets a legacy role, and writes a safe trace", async () => {
@@ -160,5 +164,107 @@ describe("M2 Feishu identity binding", () => {
       }),
     ]);
     expect(JSON.stringify(traces)).not.toContain(PROVIDER_ACCOUNT_ID);
+  });
+});
+
+describe("M2 Feishu OAuth provider contract", () => {
+  it("uses the documented token request and accepts a successful business response", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ code: 0, access_token: "access-token-fixture" })),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      identityAuthTest.exchangeFeishuCode({
+        appId: "cli_fixture",
+        appSecret: "fixture-secret",
+        callbackUrl: "https://convex.example.test/api/m2-auth/feishu/callback",
+        code: "authorization-code-fixture",
+      }),
+    ).resolves.toEqual({ ok: true, accessToken: "access-token-fixture" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          grant_type: "authorization_code",
+          client_id: "cli_fixture",
+          client_secret: "fixture-secret",
+          code: "authorization-code-fixture",
+          redirect_uri: "https://convex.example.test/api/m2-auth/feishu/callback",
+        }),
+      },
+    );
+  });
+
+  it.each([
+    [20002, "token_exchange_client_secret_invalid"],
+    [20003, "token_exchange_authorization_code_invalid"],
+    [20010, "token_exchange_user_not_authorized"],
+    [20071, "token_exchange_redirect_uri_mismatch"],
+    [20072, "provider_unavailable"],
+  ] as const)("maps Feishu token failure %s to the safe reason %s", async (code, reasonCode) => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ code }), { status: code === 20072 ? 503 : 400 }),
+        ),
+    );
+
+    await expect(
+      identityAuthTest.exchangeFeishuCode({
+        appId: "cli_fixture",
+        appSecret: "fixture-secret",
+        callbackUrl: "https://convex.example.test/api/m2-auth/feishu/callback",
+        code: "authorization-code-fixture",
+      }),
+    ).resolves.toEqual({ ok: false, reasonCode });
+  });
+
+  it("records an unavailable provider without exposing the thrown error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network unavailable")));
+
+    await expect(
+      identityAuthTest.exchangeFeishuCode({
+        appId: "cli_fixture",
+        appSecret: "fixture-secret",
+        callbackUrl: "https://convex.example.test/api/m2-auth/feishu/callback",
+        code: "authorization-code-fixture",
+      }),
+    ).resolves.toEqual({ ok: false, reasonCode: "provider_unavailable" });
+  });
+
+  it("uses the user token only for user info and rejects a nonzero business code", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 0, data: { open_id: "ou_provider_fixture" } })),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 99991679, msg: "Unauthorized" })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      identityAuthTest.fetchFeishuProviderAccountId("access-token-fixture"),
+    ).resolves.toBe("ou_provider_fixture");
+    await expect(
+      identityAuthTest.fetchFeishuProviderAccountId("access-token-fixture"),
+    ).resolves.toBeNull();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://open.feishu.cn/open-apis/authen/v1/user_info",
+      {
+        headers: {
+          authorization: "Bearer access-token-fixture",
+          "content-type": "application/json; charset=utf-8",
+        },
+      },
+    );
   });
 });

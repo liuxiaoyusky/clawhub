@@ -58,7 +58,8 @@ export function isConfiguredFeishuAdmin(providerAccountId: string, env: Env = pr
 
 export function buildFeishuAuthorizationUrl(config: FeishuAuthRuntimeConfig, state: string) {
   const url = new URL(FEISHU_AUTHORIZE_URL);
-  url.searchParams.set("app_id", config.appId);
+  url.searchParams.set("client_id", config.appId);
+  url.searchParams.set("response_type", "code");
   url.searchParams.set("redirect_uri", config.callbackUrl);
   url.searchParams.set("state", state);
   return url.toString();
