@@ -27,3 +27,30 @@ export const feishuOAuthCallbackHttp = httpAction(async (ctx, request) => {
   })) as { completionUrl: string | null };
   return redirect(result.completionUrl);
 });
+
+export const githubOAuthLinkCallbackHttp = httpAction(async (ctx, request) => {
+  const params = new URL(request.url).searchParams;
+  const state = params.get("state")?.trim();
+  if (!state) return new Response("Invalid sign-in callback.", { status: 400 });
+
+  const code = params.get("code")?.trim();
+  if (!code) {
+    const result = (await ctx.runAction(
+      internal.identityAuth.rejectGitHubLinkOAuthCallbackInternal,
+      {
+        state,
+        reasonCode: params.get("error") ? "oauth_access_denied" : "oauth_callback_invalid",
+      },
+    )) as { completionUrl: string | null };
+    return redirect(result.completionUrl);
+  }
+
+  const result = (await ctx.runAction(
+    internal.identityAuth.completeGitHubLinkOAuthCallbackInternal,
+    {
+      state,
+      code,
+    },
+  )) as { completionUrl: string | null };
+  return redirect(result.completionUrl);
+});

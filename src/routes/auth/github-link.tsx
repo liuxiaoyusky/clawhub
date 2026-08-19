@@ -1,42 +1,30 @@
-import { useAuthActions } from "@convex-dev/auth/react";
-import { createFileRoute } from "@tanstack/react-router";
-import { useMutation } from "convex/react";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { api } from "../../../convex/_generated/api";
-import {
-  clearGitHubIdentityLinkSecret,
-  readGitHubIdentityLinkSecret,
-} from "../../lib/identityLink";
 
 export const Route = createFileRoute("/auth/github-link")({ component: GitHubIdentityLink });
 
-function GitHubIdentityLink() {
-  const { signIn, signOut } = useAuthActions();
-  const redeemGitHubLink = useMutation(api.identityAuth.redeemGitHubLink);
-  const [message, setMessage] = useState("Linking GitHub identity…");
+export function GitHubIdentityLink() {
+  const [status, setStatus] = useState<"pending" | "success" | "failed">("pending");
 
   useEffect(() => {
-    const secret = readGitHubIdentityLinkSecret();
-    if (!secret) {
-      setMessage("This identity-link request has expired. Start again from your verified account.");
-      return;
-    }
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    const result = fragment.get("status");
 
-    void redeemGitHubLink({ secret })
-      .then(async ({ redirectTo }) => {
-        clearGitHubIdentityLinkSecret();
-        await signOut().catch(() => undefined);
-        await signIn("github", { redirectTo });
-      })
-      .catch(() => {
-        clearGitHubIdentityLinkSecret();
-        setMessage("GitHub could not be linked. Start again from your verified account.");
-      });
-  }, [redeemGitHubLink, signIn, signOut]);
+    window.history.replaceState(null, "", window.location.pathname);
+    setStatus(result === "success" ? "success" : "failed");
+  }, []);
+
+  const message =
+    status === "pending"
+      ? "Completing GitHub identity link…"
+      : status === "success"
+        ? "GitHub identity linked successfully."
+        : "GitHub identity could not be linked. Please start again from your verified account.";
 
   return (
     <main className="section">
       <p role="status">{message}</p>
+      {status === "success" ? <Link to="/dashboard">Return to Dashboard</Link> : null}
     </main>
   );
 }

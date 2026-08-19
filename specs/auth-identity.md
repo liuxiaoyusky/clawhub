@@ -2,6 +2,42 @@
 
 ClawHub uses Convex Auth with GitHub OAuth for production user sessions.
 
+## M2 local employee directory
+
+When the M2 employee-identity gate is enabled, the local employee directory is
+the only source of truth for an employee's normalized email, `valid` state, and
+platform role. `users._id` is the canonical technical record linked to that
+directory entry; a GitHub account id or Feishu account id is only a login
+credential for the same user.
+
+Every new session must resolve its canonical user to an active directory entry
+before it is created. A disabled or missing entry must reject both Feishu and
+GitHub sign-in without creating a user, account, or session. Existing sessions
+keep their normal expiry behavior; M2 does not claim real-time revocation.
+
+Feishu may provide an email solely to look up a pre-provisioned employee entry.
+GitHub OAuth email, login, display name, and avatar are never employee keys and
+must not create or merge an employee entry. GitHub can only sign in after an
+explicit binding to a canonical user. The directory role is the authorization
+source; `users.role` is only a synchronized compatibility projection while the
+legacy application completes its replacement.
+
+The protected `AUTH_EMPLOYEE_BOOTSTRAP_ADMIN_EMAIL` setting may establish only
+the designated first administrator after a matching Feishu identity lookup. It
+is a provisioning constraint, not an OAuth role claim; real values never enter
+source, test fixtures, browser storage, or traces. Once a directory row exists,
+its `role` remains the authorization source and the local control operation may
+only preserve or assign `admin` to that same configured employee email.
+The local `dev-persona` credential is unavailable while the M2 gate is enabled;
+it must never become an alternate administrator or session-creation path.
+
+GitHub linking starts from an authenticated active employee session, stores only
+a hashed one-time OAuth state server-side, and sends the browser to a dedicated
+server callback. The server exchanges the code and binds the numeric GitHub
+provider id directly to the target `users._id`. It must not create a temporary
+user/session, transfer an `authAccounts` row from another user, or retain an
+OAuth code, token, profile email, or link proof in browser storage.
+
 ## OAuth completion query parameter
 
 The app-level OAuth code handler consumes `?code=` on every route, so `code` is

@@ -21,14 +21,31 @@ standing. If your account was banned or disabled, use the
 [ClawHub appeal form](https://appeals.openclaw.ai/) if you believe this is a
 mistake.
 
-## Internal M2 Feishu web sign-in
+## Internal M2 employee sign-in
 
 This section applies only to the internal SkillHub migration fork. The default
-upstream GitHub sign-in stays available; Feishu is disabled until every
-deployment value below is present. When enabled, a successful Feishu OAuth
-login creates or verifies one canonical local user. The backend stores only the
-Feishu `open_id` as an external account key; it does not use an email, name, or
-GitHub profile to merge accounts.
+upstream GitHub sign-in stays available while M2 is disabled. When both M2
+feature flags below are enabled, the local employee directory is the only
+source of truth for an employee's normalized email, `valid` state, and role.
+Feishu and GitHub are explicit credentials attached to the same canonical local
+user. Neither provider decides a role, and no ordinary provider sign-in can
+create an employee record.
+
+Feishu supplies an email only to match a pre-provisioned local directory entry.
+It is not automatic authorization, registration, account merge, or a role
+claim. GitHub profile email, name, handle, and avatar are never employee keys.
+
+### How local maintenance works
+
+Each directory entry stores `email`, `valid`, `role`, and an optional canonical
+`users._id` link. The first designated administrator may be bootstrapped only
+by the protected `AUTH_EMPLOYEE_BOOTSTRAP_ADMIN_EMAIL` setting after a matching
+Feishu sign-in. Thereafter, the auth-guarded `employeeDirectory.upsert` control
+operation maintains entries and synchronizes the legacy `users.role` projection.
+M2 intentionally does not include an end-user directory-management UI; do not
+edit `users.role` directly while the employee-directory gate is enabled.
+Local dev-persona authentication is also explicitly rejected while that gate is
+enabled, so it cannot provide a second local administrator path.
 
 ### Configure a non-production test environment
 
@@ -40,24 +57,26 @@ GitHub profile to merge accounts.
    <CONVEX_SITE_URL>/api/m2-auth/feishu/callback
    ```
 
-   `CONVEX_SITE_URL` is injected by Convex; do not set or override it. For the
-   current local test deployment, the callback is
-   `http://127.0.0.1:3211/api/m2-auth/feishu/callback`. Use the same value in
-   the authorization request and token exchange. For a shared test, prefer a
-   dedicated HTTPS test deployment. A local test is only viable when Feishu
-   accepts the loopback callback and the browser, frontend, and Convex HTTP
-   site run on the same machine; use `127.0.0.1`, not the browser-only `[::1]`
-   address.
+   `CONVEX_SITE_URL` is injected by Convex; do not set or override it. Use the
+   callback derived from the current local deployment, not an old saved port.
+   For a shared test, prefer a dedicated HTTPS test deployment. A local test is
+   only viable when Feishu accepts the loopback callback and the browser,
+   frontend, and Convex HTTP site run on the same machine; use `127.0.0.1`, not
+   the browser-only `[::1]` address.
 
-2. Publish the self-built app's configuration and request only the permissions
-   required by the app. This flow calls the user-info endpoint solely to obtain
-   `open_id`; it does not request email, phone, directory, or offline-access
-   permissions. See Feishu's [browser web integration guide](https://open.feishu.cn/document/sso/web-application-end-user-consent/guide).
+2. Publish the self-built app's configuration and grant the user-email field
+   permission required by Feishu's user-info endpoint. The response must carry
+   both `open_id` and `email`; the backend uses the latter only to look up a
+   pre-provisioned local entry. Feishu documents that contact fields may not be
+   real-time verified, which is why the local directory—not the response
+   itself—decides eligibility. See Feishu's [browser web integration guide](https://open.feishu.cn/document/sso/web-application-end-user-consent/guide) and [user-info response fields](https://open.feishu.cn/document/server-docs/authentication-management/login-state-management/get).
 
 3. Set the backend deployment variables through the Convex environment store,
    never in committed files:
 
    ```bash
+   bunx convex env set AUTH_EMPLOYEE_DIRECTORY_ENABLED 1
+   bunx convex env set AUTH_EMPLOYEE_BOOTSTRAP_ADMIN_EMAIL <designated-admin-employee-email>
    bunx convex env set AUTH_FEISHU_ENABLED 1
    bunx convex env set AUTH_FEISHU_APP_ID <feishu-app-id>
    bunx convex env set AUTH_FEISHU_APP_SECRET <feishu-app-secret>
@@ -66,12 +85,22 @@ GitHub profile to merge accounts.
 
    Never run `bunx convex env set CONVEX_SITE_URL`: it is a reserved Convex
    runtime variable and Convex rejects overrides. `SITE_URL` is the browser app
-   origin that receives the final fragment-only ticket and must exactly match
-   the test frontend. Set
-   `AUTH_FEISHU_ADMIN_OPEN_ID` only in that same protected environment after an
-   authorized operator has obtained the designated administrator's stable
-   `open_id`; never substitute an email address or put the value in a log,
-   test, or chat.
+   origin that receives the final fragment-only result and must exactly match
+   the test frontend. Keep the designated administrator email in the protected
+   deployment environment only; never place a real employee email in Git,
+   fixtures, logs, or chat.
+
+4. Keep the existing GitHub OAuth callback registered, and add this dedicated
+   callback to the same GitHub OAuth App for explicit employee-account binding:
+
+   ```text
+   <CONVEX_SITE_URL>/api/m2-auth/github/callback
+   ```
+
+   The binding callback exchanges the code server-side, reads only the numeric
+   GitHub account id, and attaches it directly to the already authenticated
+   employee user. It never creates a temporary GitHub user or writes a
+   one-time proof into browser storage.
 
 ### Test the flow
 
@@ -82,9 +111,12 @@ requiring a real Feishu account:
 
 ```bash
 bunx vitest run \
+  convex/auth.callbacks.test.ts \
+  convex/employeeDirectory.test.ts \
   convex/identityAuth.test.ts \
   convex/identityAuth.runtime.test.ts \
   convex/identityAuthHttp.test.ts \
+  convex/http.test.ts \
   convex/lib/authTrace.test.ts \
   convex/lib/m2AuthConfig.test.ts
 ```
@@ -93,15 +125,27 @@ After that gate passes, a valid Feishu test employee is still needed once to
 verify the external provider boundary. Do not ask for repeated blind retries:
 inspect the safe trace reference first, then act on its classified reason.
 
-1. Start with `AUTH_FEISHU_ADMIN_OPEN_ID` unset and sign in with a valid test
-   employee. The result must be a new or existing local user with role `user`.
-2. Configure the designated administrator's `open_id`, sign in again, and
-   verify the canonical user has role `admin`. A GitHub sign-in must still
-   resolve only to that same explicitly linked local user.
-3. Cancel the Feishu consent page or use an invalid callback: no local session
-   may be created, and the browser URL must not retain a code or ticket.
-4. Set `AUTH_FEISHU_ENABLED=0` to exercise rollback. This restores the existing
-   GitHub path without deleting users, mappings, or audit data.
+1. Configure the protected bootstrap-admin email, then complete Feishu sign-in
+   as that designated test employee. It creates the first active directory row
+   with role `admin` and its canonical local user.
+2. As that directory administrator, pre-provision a distinct test employee with
+   `valid=true` and role `user` through the local directory control operation.
+   The ordinary employee can then complete Feishu sign-in; a missing or disabled
+   record must produce no user, provider-account mapping, ticket, or session.
+3. While signed in as the valid employee, use **Link GitHub identity** and
+   approve the GitHub consent page. The custom callback must return to
+   `/auth/github-link` without an OAuth code in the browser URL, and a later
+   GitHub sign-in must resolve to the same canonical user and directory role.
+4. Cancel either provider consent page or use an invalid callback: no local
+   session may be created, and the browser URL must not retain a code or ticket.
+5. Set an employee record to `valid=false` and verify that both Feishu and
+   GitHub refuse new sessions while a previously issued session is allowed to
+   expire normally.
+6. To exercise the complete M1 fallback, set both
+   `AUTH_FEISHU_ENABLED=0` and `AUTH_EMPLOYEE_DIRECTORY_ENABLED=0`. This
+   restores the legacy GitHub path without deleting users, mappings, directory
+   records, audit data, or historical content. Leaving the directory gate on is
+   intentionally fail-closed: only already bound valid employees can use GitHub.
 
 The application records only a random `auth_trace_id`, provider, stage, and
 non-sensitive outcome for seven days. OAuth codes, access tokens, secrets, and

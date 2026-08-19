@@ -2,15 +2,10 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { ActionCtx, MutationCtx, QueryCtx } from "../_generated/server";
-import { isFeishuAuthEnabled } from "./m2AuthConfig";
 
 export type Role = "admin" | "moderator" | "user" | "mirror";
 
 const DEV_IMPERSONATE_LOCAL_HANDLE = "local";
-
-function isEligibleForActiveAccess(user: { enterpriseIdentityVerifiedAt?: number }) {
-  return !isFeishuAuthEnabled() || Boolean(user.enterpriseIdentityVerifiedAt);
-}
 
 function readEnv(name: string) {
   const value = readKnownEnv(name)?.trim();
@@ -76,8 +71,7 @@ export async function getOptionalActiveAuthUserId(
     const userId = await getAuthUserId(ctx);
     if (!userId) return undefined;
     const user = await ctx.db.get(userId);
-    if (!user || user.deletedAt || user.deactivatedAt || !isEligibleForActiveAccess(user))
-      return undefined;
+    if (!user || user.deletedAt || user.deactivatedAt) return undefined;
     return userId;
   } catch {
     return undefined;
@@ -93,8 +87,7 @@ export async function getOptionalActiveAuthUserIdFromAction(
     const userId = await getAuthUserId(ctx);
     if (!userId) return undefined;
     const user = await ctx.runQuery(internal.users.getByIdInternal, { userId });
-    if (!user || user.deletedAt || user.deactivatedAt || !isEligibleForActiveAccess(user))
-      return undefined;
+    if (!user || user.deletedAt || user.deactivatedAt) return undefined;
     return userId;
   } catch {
     return undefined;
@@ -122,7 +115,7 @@ export async function requireUser(ctx: MutationCtx | QueryCtx) {
   } catch {
     throw new Error("User not found");
   }
-  if (!user || user.deletedAt || user.deactivatedAt || !isEligibleForActiveAccess(user)) {
+  if (!user || user.deletedAt || user.deactivatedAt) {
     throw new Error("User not found");
   }
   return { userId, user };
@@ -151,7 +144,7 @@ export async function requireUserFromAction(
   } catch {
     throw new Error("User not found");
   }
-  if (!user || user.deletedAt || user.deactivatedAt || !isEligibleForActiveAccess(user)) {
+  if (!user || user.deletedAt || user.deactivatedAt) {
     throw new Error("User not found");
   }
   return { userId, user: user as Doc<"users"> };

@@ -4,15 +4,23 @@ import { describe, expect, it } from "vitest";
 import {
   buildFeishuAuthorizationUrl,
   buildFrontendFeishuCallbackUrl,
+  buildFrontendGitHubLinkCallbackUrl,
+  buildGitHubIdentityLinkAuthorizationUrl,
+  getEmployeeDirectoryBootstrapAdminEmail,
   getFeishuAuthRuntimeConfig,
-  isConfiguredFeishuAdmin,
+  getGitHubIdentityLinkRuntimeConfig,
+  isEmployeeDirectoryEnabled,
+  isFeishuAuthEnabled,
 } from "./m2AuthConfig";
 
 const ENV = {
   AUTH_FEISHU_ENABLED: "1",
   AUTH_FEISHU_APP_ID: "cli_fixture",
   AUTH_FEISHU_APP_SECRET: "fixture-secret",
-  AUTH_FEISHU_ADMIN_OPEN_ID: "ou_admin_fixture",
+  AUTH_EMPLOYEE_DIRECTORY_ENABLED: "1",
+  AUTH_EMPLOYEE_BOOTSTRAP_ADMIN_EMAIL: "admin@example.test",
+  AUTH_GITHUB_ID: "github-fixture",
+  AUTH_GITHUB_SECRET: "github-fixture-secret",
   CONVEX_SITE_URL: "https://convex.example.test",
   SITE_URL: "https://skillhub.example.test",
 };
@@ -33,8 +41,20 @@ describe("M2 Feishu auth configuration", () => {
       callbackUrl: "https://convex.example.test/api/m2-auth/feishu/callback",
       frontendUrl: "https://skillhub.example.test/",
     });
-    expect(isConfiguredFeishuAdmin("ou_admin_fixture", ENV)).toBe(true);
-    expect(isConfiguredFeishuAdmin("ou_another_user", ENV)).toBe(false);
+    expect(isEmployeeDirectoryEnabled(ENV)).toBe(true);
+    expect(isFeishuAuthEnabled(ENV)).toBe(true);
+    expect(getEmployeeDirectoryBootstrapAdminEmail(ENV)).toBe("admin@example.test");
+    expect(getGitHubIdentityLinkRuntimeConfig(ENV)).toMatchObject({
+      clientId: "github-fixture",
+      callbackUrl: "https://convex.example.test/api/m2-auth/github/callback",
+      frontendUrl: "https://skillhub.example.test/",
+    });
+  });
+
+  it("requires the employee directory gate before exposing Feishu or GitHub linking", () => {
+    const disabled = { ...ENV, AUTH_EMPLOYEE_DIRECTORY_ENABLED: "0" };
+    expect(isFeishuAuthEnabled(disabled)).toBe(false);
+    expect(getGitHubIdentityLinkRuntimeConfig(disabled)).toBeNull();
   });
 
   it("keeps credentials out of browser redirects and uses a fragment for the ticket", () => {
@@ -62,5 +82,31 @@ describe("M2 Feishu auth configuration", () => {
     expect(fragment.get("trace")).toMatch(/^auth_/);
     expect(fragment.get("next")).toBe("/skills?q=padel");
     expect(completionUrl.toString()).not.toContain("fixture-secret");
+  });
+
+  it("uses the dedicated server callback for GitHub binding and a fragment-only result", () => {
+    const config = getGitHubIdentityLinkRuntimeConfig(ENV);
+    if (!config) throw new Error("Expected fixture configuration");
+
+    const authorizationUrl = new URL(
+      buildGitHubIdentityLinkAuthorizationUrl(config, "c".repeat(64)),
+    );
+    expect(authorizationUrl.origin).toBe("https://github.com");
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(config.callbackUrl);
+    expect(authorizationUrl.searchParams.get("scope")).toBe("read:user");
+    expect(authorizationUrl.toString()).not.toContain("github-fixture-secret");
+
+    const completionUrl = new URL(
+      buildFrontendGitHubLinkCallbackUrl({
+        config,
+        traceId: "auth_123e4567-e89b-42d3-a456-426614174000",
+        success: true,
+      }),
+    );
+    expect(completionUrl.search).toBe("");
+    const fragment = new URLSearchParams(completionUrl.hash.slice(1));
+    expect(fragment.get("status")).toBe("success");
+    expect(fragment.get("next")).toBe("/dashboard");
+    expect(completionUrl.toString()).not.toContain("github-fixture-secret");
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { ensurePersonalPublisherForUserMock } = vi.hoisted(() => ({
   ensurePersonalPublisherForUserMock: vi.fn(),
@@ -15,15 +15,21 @@ vi.mock("./functions", () => ({
   query: (definition: { handler: unknown }) => ({ _handler: definition.handler }),
 }));
 
-import { __test as identityAuthTest, completeFeishuIdentityInternal } from "./identityAuth";
+import {
+  __test as identityAuthTest,
+  completeFeishuIdentityInternal,
+  completeGitHubLinkIdentityInternal,
+} from "./identityAuth";
 
 const TRACE_ID = "auth_123e4567-e89b-42d3-a456-426614174000";
 const PROVIDER_ACCOUNT_ID = "ou_provider_fixture";
+const EMPLOYEE_EMAIL = "employee@example.test";
 
 type Insert = { table: string; value: Record<string, unknown> };
 
 function makeContext(args: {
   attempt: Record<string, unknown>;
+  employee: Record<string, unknown> | null;
   existingAccount: Record<string, unknown> | null;
   targetUser: Record<string, unknown>;
 }) {
@@ -33,6 +39,7 @@ function makeContext(args: {
       withIndex: vi.fn(() => ({
         unique: vi.fn(async () => {
           if (table === "identityAuthAttempts") return args.attempt;
+          if (table === "employeeDirectory") return args.employee;
           if (table === "authAccounts") return args.existingAccount;
           throw new Error(`Unexpected query table: ${table}`);
         }),
@@ -52,13 +59,72 @@ function makeContext(args: {
 type CompleteHandler = {
   _handler: (
     ctx: unknown,
-    args: { stateHash: string; providerAccountId: string; ticketHash: string },
+    args: {
+      stateHash: string;
+      providerAccountId: string;
+      employeeEmail: string;
+      ticketHash: string;
+    },
   ) => Promise<Record<string, unknown>>;
 };
 
 const completeHandler = (completeFeishuIdentityInternal as unknown as CompleteHandler)._handler;
 
+type CompleteGitHubLinkHandler = {
+  _handler: (
+    ctx: unknown,
+    args: { stateHash: string; providerAccountId: string },
+  ) => Promise<Record<string, unknown>>;
+};
+
+const completeGitHubLinkHandler = (
+  completeGitHubLinkIdentityInternal as unknown as CompleteGitHubLinkHandler
+)._handler;
+
+function makeGitHubLinkContext() {
+  const inserts: Insert[] = [];
+  const targetUser = {
+    _id: "users:canonical",
+    role: "user",
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const link = {
+    _id: "identityAuthLinks:1",
+    targetUserId: targetUser._id,
+    traceId: TRACE_ID,
+    status: "processing",
+    expiresAt: Date.now() + 60_000,
+  };
+  const db = {
+    query: vi.fn((table: string) => ({
+      withIndex: vi.fn(() => ({
+        unique: vi.fn(async () => {
+          if (table === "identityAuthLinks") return link;
+          if (table === "employeeDirectory") {
+            return { email: EMPLOYEE_EMAIL, valid: true, role: "user", userId: targetUser._id };
+          }
+          if (table === "authAccounts") return null;
+          throw new Error(`Unexpected query table: ${table}`);
+        }),
+      })),
+    })),
+    get: vi.fn(async () => targetUser),
+    insert: vi.fn(async (table: string, value: Record<string, unknown>) => {
+      inserts.push({ table, value });
+      return `${table}:fixture`;
+    }),
+    patch: vi.fn(async () => undefined),
+  };
+  return { ctx: { db }, db, inserts };
+}
+
+beforeEach(() => {
+  vi.stubEnv("AUTH_EMPLOYEE_DIRECTORY_ENABLED", "1");
+});
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
 
@@ -74,6 +140,12 @@ describe("M2 Feishu identity binding", () => {
         status: "processing",
         expiresAt: Date.now() + 60_000,
       },
+      employee: {
+        _id: "employeeDirectory:1",
+        email: EMPLOYEE_EMAIL,
+        valid: true,
+        role: "user",
+      },
       existingAccount: null,
       targetUser: {
         _id: "users:canonical",
@@ -87,6 +159,7 @@ describe("M2 Feishu identity binding", () => {
       completeHandler(ctx, {
         stateHash: "state-hash",
         providerAccountId: PROVIDER_ACCOUNT_ID,
+        employeeEmail: EMPLOYEE_EMAIL,
         ticketHash: "ticket-hash",
       }),
     ).resolves.toEqual({ ok: true, traceId: TRACE_ID, redirectTo: "/dashboard" });
@@ -97,8 +170,14 @@ describe("M2 Feishu identity binding", () => {
       providerAccountId: PROVIDER_ACCOUNT_ID,
     });
     expect(db.patch).toHaveBeenCalledWith("users:canonical", {
+      email: EMPLOYEE_EMAIL,
+      emailVerificationTime: undefined,
       enterpriseIdentityVerifiedAt: expect.any(Number),
       role: "user",
+      updatedAt: expect.any(Number),
+    });
+    expect(db.patch).toHaveBeenCalledWith("employeeDirectory:1", {
+      userId: "users:canonical",
       updatedAt: expect.any(Number),
     });
     expect(ensurePersonalPublisherForUserMock).not.toHaveBeenCalled();
@@ -125,6 +204,12 @@ describe("M2 Feishu identity binding", () => {
         status: "processing",
         expiresAt: Date.now() + 60_000,
       },
+      employee: {
+        _id: "employeeDirectory:1",
+        email: EMPLOYEE_EMAIL,
+        valid: true,
+        role: "user",
+      },
       existingAccount: { _id: "authAccounts:existing", userId: "users:someone-else" },
       targetUser: {
         _id: "users:canonical",
@@ -138,6 +223,7 @@ describe("M2 Feishu identity binding", () => {
       completeHandler(ctx, {
         stateHash: "state-hash",
         providerAccountId: PROVIDER_ACCOUNT_ID,
+        employeeEmail: EMPLOYEE_EMAIL,
         ticketHash: "ticket-hash",
       }),
     ).resolves.toEqual({
@@ -164,6 +250,57 @@ describe("M2 Feishu identity binding", () => {
       }),
     ]);
     expect(JSON.stringify(traces)).not.toContain(PROVIDER_ACCOUNT_ID);
+  });
+
+  it("rejects an inactive employee before it can bind an account or issue a ticket", async () => {
+    const { ctx, db, inserts } = makeContext({
+      attempt: {
+        _id: "identityAuthAttempts:1",
+        traceId: TRACE_ID,
+        redirectTo: "/dashboard",
+        status: "processing",
+        expiresAt: Date.now() + 60_000,
+      },
+      employee: {
+        _id: "employeeDirectory:1",
+        email: EMPLOYEE_EMAIL,
+        valid: false,
+        role: "user",
+      },
+      existingAccount: null,
+      targetUser: {
+        _id: "users:canonical",
+        role: "user",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+
+    await expect(
+      completeHandler(ctx, {
+        stateHash: "state-hash",
+        providerAccountId: PROVIDER_ACCOUNT_ID,
+        employeeEmail: EMPLOYEE_EMAIL,
+        ticketHash: "ticket-hash",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      traceId: TRACE_ID,
+      redirectTo: "/dashboard",
+      reasonCode: "identity_binding_failed",
+    });
+
+    expect(db.insert).not.toHaveBeenCalledWith(
+      "authAccounts",
+      expect.objectContaining({ providerAccountId: PROVIDER_ACCOUNT_ID }),
+    );
+    expect(db.insert).not.toHaveBeenCalledWith("identityAuthTickets", expect.anything());
+    expect(inserts).toEqual([
+      expect.objectContaining({
+        table: "authTraceEvents",
+        value: expect.objectContaining({ reasonCode: "identity_binding_failed" }),
+      }),
+    ]);
   });
 });
 
@@ -240,18 +377,26 @@ describe("M2 Feishu OAuth provider contract", () => {
     ).resolves.toEqual({ ok: false, reasonCode: "provider_unavailable" });
   });
 
-  it("uses the user token only for user info and rejects a nonzero business code", async () => {
+  it("uses the user token only for user info and requires the directory-matching email", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ code: 0, data: { open_id: "ou_provider_fixture" } })),
+        new Response(
+          JSON.stringify({
+            code: 0,
+            data: { open_id: "ou_provider_fixture", email: EMPLOYEE_EMAIL },
+          }),
+        ),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify({ code: 99991679, msg: "Unauthorized" })));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      identityAuthTest.fetchFeishuProviderAccountId("access-token-fixture"),
-    ).resolves.toBe("ou_provider_fixture");
+      identityAuthTest.fetchFeishuIdentityProfile("access-token-fixture"),
+    ).resolves.toEqual({
+      providerAccountId: "ou_provider_fixture",
+      employeeEmail: EMPLOYEE_EMAIL,
+    });
     await expect(
       identityAuthTest.fetchFeishuProviderAccountId("access-token-fixture"),
     ).resolves.toBeNull();
@@ -266,5 +411,59 @@ describe("M2 Feishu OAuth provider contract", () => {
         },
       },
     );
+  });
+});
+
+describe("M2 GitHub identity binding", () => {
+  it("binds the OAuth account directly to the existing employee user without a temporary user", async () => {
+    const { ctx, db, inserts } = makeGitHubLinkContext();
+
+    await expect(
+      completeGitHubLinkHandler(ctx, {
+        stateHash: "state-hash",
+        providerAccountId: "123456",
+      }),
+    ).resolves.toEqual({ ok: true, traceId: TRACE_ID });
+
+    expect(db.insert).toHaveBeenCalledWith("authAccounts", {
+      userId: "users:canonical",
+      provider: "github",
+      providerAccountId: "123456",
+    });
+    expect(db.insert).not.toHaveBeenCalledWith("users", expect.anything());
+    expect(db.patch).toHaveBeenCalledWith("users:canonical", {
+      email: EMPLOYEE_EMAIL,
+      emailVerificationTime: undefined,
+      role: "user",
+      updatedAt: expect.any(Number),
+    });
+    expect(db.patch).toHaveBeenCalledWith("identityAuthLinks:1", {
+      status: "completed",
+      usedAt: expect.any(Number),
+    });
+    const traces = inserts
+      .filter((insert) => insert.table === "authTraceEvents")
+      .map((insert) => insert.value);
+    expect(JSON.stringify(traces)).not.toContain("123456");
+  });
+
+  it("uses the GitHub token only to retrieve a numeric provider id", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ id: 123456, login: "ignored-display-name" })),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      identityAuthTest.fetchGitHubProviderAccountId("access-token-fixture"),
+    ).resolves.toBe("123456");
+
+    expect(fetchMock).toHaveBeenCalledWith("https://api.github.com/user", {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: "Bearer access-token-fixture",
+      },
+    });
   });
 });

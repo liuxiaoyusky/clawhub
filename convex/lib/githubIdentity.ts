@@ -3,6 +3,22 @@ import type { QueryCtx } from "../_generated/server";
 
 const MAX_GITHUB_AUTH_ACCOUNTS_PER_USER = 10;
 
+/** GitHub account ids are immutable numeric provider identifiers. */
+export function normalizeGitHubProviderAccountId(profileId: unknown) {
+  const id =
+    typeof profileId === "number" && Number.isSafeInteger(profileId)
+      ? String(profileId)
+      : typeof profileId === "string"
+        ? profileId.trim()
+        : null;
+
+  if (!id || !/^\d+$/.test(id)) {
+    throw new Error("GitHub OAuth profile is missing a valid numeric id");
+  }
+
+  return id;
+}
+
 export function canHealSkillOwnershipByGitHubProviderAccountId(
   ownerProviderAccountId: string | null | undefined,
   callerProviderAccountId: string | null | undefined,

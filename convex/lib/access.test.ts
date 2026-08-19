@@ -64,6 +64,27 @@ describe("access.requireUser", () => {
     expect(result).toEqual({ userId: "users:2", user });
   });
 
+  it("keeps an already-authenticated user active when M2 is enabled", async () => {
+    try {
+      vi.stubEnv("AUTH_EMPLOYEE_DIRECTORY_ENABLED", "1");
+      vi.stubEnv("AUTH_FEISHU_ENABLED", "1");
+      vi.stubEnv("AUTH_FEISHU_APP_ID", "cli_fixture");
+      vi.stubEnv("AUTH_FEISHU_APP_SECRET", "fixture-secret");
+      vi.stubEnv("CONVEX_SITE_URL", "https://convex.example.test");
+      vi.stubEnv("SITE_URL", "https://skillhub.example.test");
+      vi.mocked(getAuthUserId).mockResolvedValue("users:2" as never);
+      const user = { _id: "users:2", role: "user" };
+
+      await expect(
+        requireUser({
+          db: { get: vi.fn().mockResolvedValue(user as never) },
+        } as never),
+      ).resolves.toEqual({ userId: "users:2", user });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("uses the local dev impersonation user before browser auth", async () => {
     const previousHandle = process.env.CLAW_HUB_DEV_IMPERSONATE_USER_HANDLE;
     const previousEnabled = process.env.CLAW_HUB_ENABLE_DEV_IMPERSONATION;

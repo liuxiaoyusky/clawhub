@@ -97,6 +97,11 @@ describe("HTTP route rate limit defaults", () => {
     vi.unstubAllEnvs();
   });
 
+  it("registers both M2 OAuth callbacks", () => {
+    expect(http.lookup("/api/m2-auth/feishu/callback", "GET")).toBeDefined();
+    expect(http.lookup("/api/m2-auth/github/callback", "GET")).toBeDefined();
+  });
+
   it("keeps native Trending rate limited while the skills.sh lane is off", async () => {
     vi.stubEnv("CLAWHUB_ENV", "production");
     vi.stubEnv("CLAWHUB_SKILLS_SH_ROLLOUT_MODE", "off");

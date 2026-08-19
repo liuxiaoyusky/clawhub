@@ -5,7 +5,16 @@ import type { GenericMutationCtx } from "convex/server";
 import { ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import type { DataModel, Id } from "./_generated/dataModel";
+import {
+  createAuthTraceId,
+  logAuthTrace,
+  type AuthTraceEvent,
+  type AuthTraceOutcome,
+  type AuthTraceReasonCode,
+  type AuthTraceStage,
+} from "./lib/authTrace";
 import { isLocalDevAuthEnabled } from "./lib/devAuth";
+import { normalizeGitHubProviderAccountId } from "./lib/githubIdentity";
 import {
   GITHUB_ORG_MEMBERSHIP_SYNC_PROFILE_KEY,
   fetchActiveGitHubOrgMemberships,
@@ -13,7 +22,7 @@ import {
   replaceGitHubOrgMemberships,
 } from "./lib/githubOrgMemberships";
 import { shouldScheduleGitHubProfileSync } from "./lib/githubProfileSync";
-import { isFeishuAuthEnabled } from "./lib/m2AuthConfig";
+import { isEmployeeDirectoryEnabled, isFeishuAuthEnabled } from "./lib/m2AuthConfig";
 import { hashToken } from "./lib/tokens";
 
 export const BANNED_REAUTH_MESSAGE =
@@ -28,20 +37,10 @@ const REAUTH_BLOCKING_BAN_ACTIONS = new Set([
 ]);
 const DEV_PERSONAS = new Set(["owner", "user", "admin", "officialOrgMember", "abusePublisher"]);
 const FEISHU_TICKET_PATTERN = /^[a-f0-9]{64}$/i;
+const AUTH_TRACE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export function normalizeGitHubProfileId(profileId: unknown) {
-  const id =
-    typeof profileId === "number" && Number.isSafeInteger(profileId)
-      ? String(profileId)
-      : typeof profileId === "string"
-        ? profileId.trim()
-        : null;
-
-  if (!id || !/^\d+$/.test(id)) {
-    throw new Error("GitHub OAuth profile is missing a valid numeric id");
-  }
-
-  return id;
+  return normalizeGitHubProviderAccountId(profileId);
 }
 
 export function createGitHubAuthProvider() {
@@ -183,6 +182,66 @@ async function schedulePostUserCreatedOrUpdated(
   }
 }
 
+async function requireActiveEmployeeDirectoryUser(
+  ctx: GenericMutationCtx<DataModel>,
+  userId: Id<"users">,
+) {
+  const employee = await ctx.db
+    .query("employeeDirectory")
+    .withIndex("by_user_id", (q) => q.eq("userId", userId))
+    .unique();
+  if (!employee?.valid) {
+    throw new ConvexError("Sign in failed. Please try again.");
+  }
+  return employee;
+}
+
+function employeeDirectoryUserPatch(
+  userData: ReturnType<typeof userDataFromAuthProfile>,
+  employee: { email: string; role: "admin" | "user" },
+) {
+  // GitHub profile email is display data only in M2. The employee directory
+  // owns the email stored on the canonical local user.
+  const {
+    email: _githubEmail,
+    emailVerificationTime: _githubEmailVerificationTime,
+    ...profile
+  } = userData;
+  return {
+    ...profile,
+    email: employee.email,
+    emailVerificationTime: undefined,
+    role: employee.role,
+    updatedAt: Date.now(),
+  };
+}
+
+function isDirectGitHubOAuth(args: { provider: { id?: string } }) {
+  return args.provider.id === "github";
+}
+
+async function recordDirectGitHubAuthTrace(
+  ctx: Pick<GenericMutationCtx<DataModel>, "db">,
+  stage: AuthTraceStage,
+  outcome: AuthTraceOutcome,
+  reasonCode?: AuthTraceReasonCode,
+) {
+  const occurredAt = Date.now();
+  const event: AuthTraceEvent = {
+    traceId: createAuthTraceId(),
+    provider: "github",
+    stage,
+    outcome,
+    occurredAt,
+    ...(reasonCode ? { reasonCode } : {}),
+  };
+  logAuthTrace(console, event);
+  await ctx.db.insert("authTraceEvents", {
+    ...event,
+    expiresAt: occurredAt + AUTH_TRACE_RETENTION_MS,
+  });
+}
+
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
   providers: [
     createGitHubAuthProvider(),
@@ -202,6 +261,9 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
     ConvexCredentials({
       id: "dev-persona",
       authorize: async (credentials, ctx) => {
+        if (isEmployeeDirectoryEnabled()) {
+          throw new Error("Dev auth is unavailable while M2 employee identity is enabled");
+        }
         const devAuthSecret =
           typeof credentials.devAuthSecret === "string" ? credentials.devAuthSecret : undefined;
         if (!isLocalDevAuthEnabled(process.env, devAuthSecret)) {
@@ -230,18 +292,58 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
     async createOrUpdateUser(ctx, args) {
       const userData = userDataFromAuthProfile(args);
       const githubOrgMembershipSync = readGitHubOrgMembershipSync(args.profile);
+      const employeeDirectoryEnabled = isEmployeeDirectoryEnabled();
       if (args.existingUserId !== null) {
         const userId = args.existingUserId as Id<"users">;
         const existingUser = await ctx.db.get(userId);
         if (existingUser?.deletedAt || existingUser?.deactivatedAt) {
+          if (employeeDirectoryEnabled && isDirectGitHubOAuth(args)) {
+            await recordDirectGitHubAuthTrace(
+              ctx,
+              "rejected",
+              "rejected",
+              "session_creation_failed",
+            );
+          }
           return userId;
         }
-        await ctx.db.patch(userId, userData);
+        let employee = null;
+        if (employeeDirectoryEnabled) {
+          try {
+            employee = await requireActiveEmployeeDirectoryUser(ctx, userId);
+          } catch (error) {
+            if (isDirectGitHubOAuth(args)) {
+              await recordDirectGitHubAuthTrace(
+                ctx,
+                "rejected",
+                "rejected",
+                "identity_binding_failed",
+              );
+            }
+            throw error;
+          }
+        }
+        await ctx.db.patch(
+          userId,
+          employee ? employeeDirectoryUserPatch(userData, employee) : userData,
+        );
         if (githubOrgMembershipSync) {
           await replaceGitHubOrgMemberships(ctx, userId, githubOrgMembershipSync);
         }
         await schedulePostUserCreatedOrUpdated(ctx, userId, existingUser);
+        if (employeeDirectoryEnabled && isDirectGitHubOAuth(args)) {
+          await recordDirectGitHubAuthTrace(ctx, "profile_validated", "success");
+        }
         return userId;
+      }
+
+      // M2 intentionally permits no GitHub-driven registration or account
+      // merge. A GitHub credential has to be explicitly bound first.
+      if (employeeDirectoryEnabled) {
+        if (isDirectGitHubOAuth(args)) {
+          await recordDirectGitHubAuthTrace(ctx, "rejected", "rejected", "identity_binding_failed");
+        }
+        throw new ConvexError("Sign in failed. Please try again.");
       }
 
       const userId = await ctx.db.insert("users", userData);
@@ -257,6 +359,15 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
         userId: args.userId,
         existingUserId: args.userId,
       });
+      if (isEmployeeDirectoryEnabled()) {
+        const employee = await requireActiveEmployeeDirectoryUser(ctx, args.userId as Id<"users">);
+        await ctx.db.patch(args.userId, {
+          email: employee.email,
+          emailVerificationTime: undefined,
+          role: employee.role,
+          updatedAt: Date.now(),
+        });
+      }
     },
   },
 });

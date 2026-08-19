@@ -11,6 +11,7 @@ import {
 } from "./lib/access";
 import { isLocalDevAuthEnabled } from "./lib/devAuth";
 import { syncGitHubProfile } from "./lib/githubAccount";
+import { isEmployeeDirectoryEnabled } from "./lib/m2AuthConfig";
 import { hasOfficialPublisherRow } from "./lib/officialPublishers";
 import { toPublicUser } from "./lib/public";
 import {
@@ -1623,6 +1624,9 @@ async function setRoleWithActor(
   role: "admin" | "moderator" | "user",
 ) {
   assertAdmin(actor);
+  if (isEmployeeDirectoryEnabled()) {
+    throw new Error("Employee directory controls roles while M2 identity is enabled.");
+  }
   const target = await ctx.db.get(targetUserId);
   if (!target) throw new Error("User not found");
   const now = Date.now();

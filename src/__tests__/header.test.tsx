@@ -16,6 +16,7 @@ const navigateMock = vi.fn();
 const {
   beginGitHubLinkMock,
   identityStatusMock,
+  navigateToAuthorizationUrlMock,
   profileHandleMock,
   signInMock,
   useQueryMock,
@@ -23,6 +24,7 @@ const {
 } = vi.hoisted(() => ({
   beginGitHubLinkMock: vi.fn(),
   identityStatusMock: vi.fn(),
+  navigateToAuthorizationUrlMock: vi.fn(),
   profileHandleMock: vi.fn(),
   signInMock: vi.fn(),
   useQueryMock: vi.fn(),
@@ -173,6 +175,10 @@ vi.mock("../lib/useAuthError", () => ({
   setAuthError: vi.fn(),
 }));
 
+vi.mock("../lib/identityLink", () => ({
+  navigateToAuthorizationUrl: navigateToAuthorizationUrlMock,
+}));
+
 vi.mock("../lib/site", () => ({
   SITE_NAME: "ClawHub",
 }));
@@ -283,6 +289,7 @@ describe("Header", () => {
     profileHandleMock.mockReturnValue(null);
     identityStatusMock.mockReturnValue({ feishuEnabled: false, status: "signed_out" });
     beginGitHubLinkMock.mockReset();
+    navigateToAuthorizationUrlMock.mockReset();
     useQueryMock.mockReset();
     useQueryMock.mockImplementation(() =>
       useQueryMock.mock.calls.length % 2 === 1 ? identityStatusMock() : profileHandleMock(),
@@ -339,7 +346,6 @@ describe("Header", () => {
       isLoading: false,
       me: {
         displayName: "Patrick",
-        email: "patrick@example.com",
         handle: "patrick",
         image: null,
         name: "Patrick",
@@ -424,6 +430,59 @@ describe("Header", () => {
     expect(signInMock).toHaveBeenCalledWith("github", { redirectTo: "/dashboard" });
     await Promise.resolve();
     expect(setAuthError).not.toHaveBeenCalled();
+  });
+
+  it("navigates to the authorization URL when linking GitHub identity", async () => {
+    authStatusMock.mockReturnValue({
+      isAuthenticated: true,
+      isLoading: false,
+      me: {
+        displayName: "Patrick",
+        handle: "patrick",
+        image: null,
+        name: "Patrick",
+      },
+    });
+    identityStatusMock.mockReturnValue({ feishuEnabled: true, status: "linked" });
+    const authorizationUrl = "https://github.com/login/oauth/authorize";
+    beginGitHubLinkMock.mockResolvedValue({ authorizationUrl });
+
+    render(<Header />);
+
+    fireEvent.click(screen.getByText("Link GitHub identity"));
+
+    await waitFor(() => {
+      expect(beginGitHubLinkMock).toHaveBeenCalledWith();
+      expect(navigateToAuthorizationUrlMock).toHaveBeenCalledWith(authorizationUrl);
+    });
+    expect(signInMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a generic error when GitHub identity linking cannot start", async () => {
+    const { setAuthError } = await import("../lib/useAuthError");
+    authStatusMock.mockReturnValue({
+      isAuthenticated: true,
+      isLoading: false,
+      me: {
+        displayName: "Patrick",
+        handle: "patrick",
+        image: null,
+        name: "Patrick",
+      },
+    });
+    identityStatusMock.mockReturnValue({ feishuEnabled: true, status: "linked" });
+    beginGitHubLinkMock.mockRejectedValue(new Error("private identity-link failure"));
+
+    render(<Header />);
+
+    fireEvent.click(screen.getByText("Link GitHub identity"));
+
+    await waitFor(() => {
+      expect(setAuthError).toHaveBeenCalledWith(
+        "Unable to start GitHub identity linking. Please try again.",
+      );
+    });
+    expect(navigateToAuthorizationUrlMock).not.toHaveBeenCalled();
   });
 
   it("keeps inline search and moves content nav into the compact menu", () => {

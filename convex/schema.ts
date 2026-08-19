@@ -202,6 +202,17 @@ const users = defineTable({
   .index("by_deactivated_purged_at", ["deactivatedAt", "purgedAt"])
   .index("by_active_handle", ["deletedAt", "deactivatedAt", "handle"]);
 
+const employeeDirectory = defineTable({
+  email: v.string(),
+  valid: v.boolean(),
+  role: v.union(v.literal("admin"), v.literal("user")),
+  userId: v.optional(v.id("users")),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_email", ["email"])
+  .index("by_user_id", ["userId"]);
+
 const authSessions = defineTable({
   userId: v.id("users"),
   expirationTime: v.number(),
@@ -258,6 +269,15 @@ const identityAuthLinks = defineTable({
   traceId: v.string(),
   createdAt: v.number(),
   expiresAt: v.number(),
+  status: v.optional(
+    v.union(
+      v.literal("pending"),
+      v.literal("processing"),
+      v.literal("completed"),
+      v.literal("rejected"),
+    ),
+  ),
+  callbackReceivedAt: v.optional(v.number()),
   usedAt: v.optional(v.number()),
 })
   .index("by_secret_hash", ["secretHash"])
@@ -4367,6 +4387,7 @@ export default defineSchema({
   identityAuthLinks,
   authTraceEvents,
   users,
+  employeeDirectory,
   publishers,
   githubOrgMemberships,
   publisherMembers,

@@ -67,7 +67,7 @@ import {
   skillsShCatalogPublicV1Http,
 } from "./httpApiV1";
 import { preflightHandler } from "./httpPreflight";
-import { feishuOAuthCallbackHttp } from "./identityAuthHttp";
+import { feishuOAuthCallbackHttp, githubOAuthLinkCallbackHttp } from "./identityAuthHttp";
 import { installRateLimitedRoutes } from "./lib/httpRouteRateLimit";
 import {
   packageInspectorAcknowledgeHttp,
@@ -86,6 +86,12 @@ http.route({
   path: "/api/m2-auth/feishu/callback",
   method: "GET",
   handler: feishuOAuthCallbackHttp,
+});
+
+http.route({
+  path: "/api/m2-auth/github/callback",
+  method: "GET",
+  handler: githubOAuthLinkCallbackHttp,
 });
 
 http.route({

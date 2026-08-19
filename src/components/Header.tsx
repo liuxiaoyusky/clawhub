@@ -28,7 +28,7 @@ import {
   routeToBannedAccountPage,
 } from "../lib/authErrorMessage";
 import { gravatarUrl } from "../lib/gravatar";
-import { writeGitHubIdentityLinkSecret } from "../lib/identityLink";
+import { navigateToAuthorizationUrl } from "../lib/identityLink";
 import { PRIMARY_NAV_ITEMS, SECONDARY_NAV_ITEMS } from "../lib/nav-items";
 import { buildPublisherProfileHref, buildSkillDetailHref } from "../lib/ownerRoute";
 import { buildPluginDetailHref, displayPluginPackageName } from "../lib/pluginRoutes";
@@ -679,9 +679,14 @@ export default function Header() {
                     <DropdownMenuItem
                       onClick={() => {
                         void beginGitHubLink()
-                          .then(({ secret }) => {
-                            writeGitHubIdentityLinkSecret(secret);
-                            return signIn("github", { redirectTo: "/auth/github-link" });
+                          .then((result) => {
+                            const authorizationUrl =
+                              "authorizationUrl" in result &&
+                              typeof result.authorizationUrl === "string"
+                                ? result.authorizationUrl
+                                : null;
+                            if (!authorizationUrl) throw new Error("Invalid link response");
+                            navigateToAuthorizationUrl(authorizationUrl);
                           })
                           .catch(() => {
                             setAuthError(

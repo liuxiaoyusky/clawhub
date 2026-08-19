@@ -59,6 +59,7 @@ const ephemeral = (
 
 export const RETENTION_POLICIES = {
   users: permanent("Canonical user profiles and account state."),
+  employeeDirectory: permanent("Local M2 employee validity and role source of truth."),
   authSessions: ephemeral("Convex Auth sessions expire after their total session duration.", {
     expirationField: "expirationTime",
     expirationIndex: "by_expiration_time",
